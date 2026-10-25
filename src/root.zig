@@ -799,7 +799,18 @@ pub const Document = struct {
         const content = pagetree.getPageContents(parse_allocator, scratch_allocator, self.data, &self.xref_table, page, &self.object_cache) catch return output.toOwnedSlice(allocator);
 
         try self.ensurePageFonts(page_num);
-        try extractTextFromContent(scratch_allocator, content, page_num, &self.font_cache, compat.arrayListWriter(&output, allocator));
+        const ctx = ExtractionContext{
+            .parse_allocator = parse_allocator,
+            .scratch_allocator = scratch_allocator,
+            .data = self.data,
+            .xref_table = &self.xref_table,
+            .object_cache = &self.object_cache,
+            .font_cache = &self.font_cache,
+            .page_num = page_num,
+            .depth = 0,
+        };
+        // Full path (ctx non-null) so that Form XObjects are followed.
+        try extractTextFromContentFull(content, page.resources, &ctx, compat.arrayListWriter(&output, allocator));
         return output.toOwnedSlice(allocator);
     }
 
@@ -884,7 +895,17 @@ pub const Document = struct {
 
                 if (content.len == 0) continue;
                 try self.ensurePageFonts(page_num);
-                try extractTextFromContent(scratch_allocator, content, page_num, &self.font_cache, compat.arrayListWriter(&result, allocator));
+                const ctx = ExtractionContext{
+                    .parse_allocator = parse_allocator,
+                    .scratch_allocator = scratch_allocator,
+                    .data = self.data,
+                    .xref_table = &self.xref_table,
+                    .object_cache = &self.object_cache,
+                    .font_cache = &self.font_cache,
+                    .page_num = page_num,
+                    .depth = 0,
+                };
+                try extractTextFromContentFull(content, page.resources, &ctx, compat.arrayListWriter(&result, allocator));
             }
         }
 
@@ -1971,21 +1992,6 @@ fn lookupFont(
     return font_cache.getPtr(key);
 }
 
-/// Extract text from content stream using pre-resolved fonts
-fn extractTextFromContent(
-    allocator: std.mem.Allocator,
-    content: []const u8,
-    page_num: usize,
-    font_cache: *const std.StringHashMap(encoding.FontEncoding),
-    writer: anytype,
-) !void {
-    // Simple path without Form XObject support - null ctx skips Do handling
-    try extractContentStream(content, .{ .stream = .{
-        .resources = null,
-        .ctx = null,
-    } }, font_cache, page_num, allocator, writer);
-}
-
 /// Extract text with full context (supports Form XObjects)
 fn extractTextFromContentFull(
     content: []const u8,
@@ -2207,6 +2213,72 @@ fn extractContentStream(
 }
 
 /// Handle Do operator - extract text from Form XObjects
+/// Load fonts declared by an arbitrary resource dictionary. Form XObjects
+/// carry their own /Font entries, which the page-level font cache never sees;
+/// each form gets its own cache so that identically named fonts (/F1) in
+/// different forms cannot collide.
+fn loadFontsForResources(
+    ctx: *const ExtractionContext,
+    resources: ?Object.Dict,
+    page_idx: usize,
+    cache: *std.StringHashMap(encoding.FontEncoding),
+) void {
+    const res = resources orelse return;
+    const fonts_obj = res.get("Font") orelse return;
+    const fonts_resolved: ?Object = switch (fonts_obj) {
+        .reference => |ref| pagetree.resolveRef(ctx.parse_allocator, ctx.data, ctx.xref_table, ref, @constCast(ctx.object_cache)) catch return,
+        else => fonts_obj,
+    };
+    if (fonts_resolved == null or fonts_resolved.? != .dict) return;
+    const fonts = fonts_resolved.?.dict;
+
+    for (fonts.entries) |entry| {
+        var key_buf: [256]u8 = undefined;
+        const key = std.fmt.bufPrint(&key_buf, "{d}:{s}", .{ page_idx, entry.key }) catch continue;
+        if (cache.contains(key)) continue;
+
+        const font_obj = switch (entry.value) {
+            .reference => |ref| pagetree.resolveRef(ctx.parse_allocator, ctx.data, ctx.xref_table, ref, @constCast(ctx.object_cache)) catch continue,
+            .dict => entry.value,
+            else => continue,
+        };
+        const fd = switch (font_obj) {
+            .dict => |d| d,
+            else => continue,
+        };
+
+        const Resolver = struct {
+            arena: std.mem.Allocator,
+            data: []const u8,
+            xref_table: *const XRefTable,
+            object_cache: *std.AutoHashMap(u32, Object),
+
+            fn resolve(self_resolver: @This(), obj: Object) Object {
+                return switch (obj) {
+                    .reference => |ref| pagetree.resolveRef(self_resolver.arena, self_resolver.data, self_resolver.xref_table, ref, self_resolver.object_cache) catch obj,
+                    else => obj,
+                };
+            }
+        };
+        var resolver = Resolver{
+            .arena = ctx.parse_allocator,
+            .data = ctx.data,
+            .xref_table = ctx.xref_table,
+            .object_cache = @constCast(ctx.object_cache),
+        };
+
+        const enc = encoding.parseFontEncoding(ctx.parse_allocator, fd, struct {
+            fn wrapper(c: *const anyopaque, obj: Object) Object {
+                const r: *const Resolver = @ptrCast(@alignCast(c));
+                return r.resolve(obj);
+            }
+        }.wrapper, &resolver) catch continue;
+
+        const owned_key = ctx.parse_allocator.dupe(u8, key) catch continue;
+        cache.put(owned_key, enc) catch {};
+    }
+}
+
 fn handleDoOperator(
     xobject_name: []const u8,
     resources: ?Object.Dict,
@@ -2275,10 +2347,15 @@ fn handleDoOperator(
         .depth = ctx.depth + 1,
     };
 
+    // The form may declare its own fonts; give it a private cache.
+    var form_fonts = std.StringHashMap(encoding.FontEncoding).init(ctx.scratch_allocator);
+    defer form_fonts.deinit();
+    loadFontsForResources(&child_ctx, form_resources, ctx.page_num, &form_fonts);
+
     extractContentStream(form_content, .{ .stream = .{
         .resources = form_resources,
         .ctx = &child_ctx,
-    } }, ctx.font_cache, ctx.page_num, ctx.scratch_allocator, writer) catch |err| {
+    } }, &form_fonts, ctx.page_num, ctx.scratch_allocator, writer) catch |err| {
         if (err == error.OutOfMemory) return err;
         // Domain errors (corrupt/unsupported stream): skip silently
     };

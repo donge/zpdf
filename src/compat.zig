@@ -68,7 +68,8 @@ pub const ArrayListWriter = struct {
 pub const has_legacy_fs_file = @hasDecl(std.fs, "File");
 pub const File = if (has_legacy_fs_file) std.fs.File else std.Io.File;
 
-var current_io: if (has_legacy_fs_file) void else ?std.Io = if (has_legacy_fs_file) {} else null;
+var current_io: if (has_legacy_fs_file) void else ?std.Io = if (has_legacy_fs_file)
+{} else null;
 
 pub fn setIo(io_value: anytype) void {
     if (comptime !has_legacy_fs_file) current_io = io_value;

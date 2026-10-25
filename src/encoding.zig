@@ -16,6 +16,7 @@ const parser = @import("parser.zig");
 const decompress = @import("decompress.zig");
 const cff = @import("cff.zig");
 const agl = @import("agl.zig");
+const unorm = @import("unicode_norm.zig");
 
 const Object = parser.Object;
 
@@ -161,6 +162,43 @@ pub const GlyphWidths = struct {
 };
 
 /// Font encoding for character code to Unicode mapping
+/// Write one Unicode codepoint after applying the text clean-up table:
+/// NFKC equivalents for Kangxi radicals / CJK compatibility / fullwidth forms,
+/// and dropping zero-width or noncharacter codepoints.
+fn writeCodepoint(writer: anytype, cp: u32) !void {
+    if (cp == 0) {
+        try writer.writeByte(' ');
+        return;
+    }
+    if (cp > 0x10FFFF) {
+        try writer.writeByte(' ');
+        return;
+    }
+    const c: u21 = @intCast(cp);
+    if (unorm.ignorable(c)) return;
+    if (unorm.lookup(c)) |e| {
+        for (e.repl[0..e.len]) |r| {
+            var buf: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(r, &buf) catch 1;
+            try writer.writeAll(buf[0..n]);
+        }
+        return;
+    }
+    var buf: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(c, &buf) catch 1;
+    try writer.writeAll(buf[0..n]);
+}
+
+/// Write a UTF-8 string through the same clean-up as writeCodepoint.
+fn writeNormalizedUTF8(writer: anytype, s: []const u8) !void {
+    var view = std.unicode.Utf8View.init(s) catch {
+        try writer.writeAll(s);
+        return;
+    };
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| try writeCodepoint(writer, cp);
+}
+
 pub const FontEncoding = struct {
     /// Unicode codepoints indexed by character code (0-255 for simple fonts)
     codepoint_map: [256]u21,
@@ -260,19 +298,11 @@ pub const FontEncoding = struct {
         for (data) |byte| {
             // Check for multi-character mapping first (ligatures)
             if (self.cmap_multi.get(byte)) |utf8_str| {
-                try writer.writeAll(utf8_str);
+                try writeNormalizedUTF8(writer, utf8_str);
                 continue;
             }
 
-            const codepoint = self.codepoint_map[byte];
-            if (codepoint == 0) {
-                // No mapping - output replacement character or space
-                try writer.writeByte(' ');
-            } else {
-                var buf: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(codepoint, &buf) catch 1;
-                try writer.writeAll(buf[0..len]);
-            }
+            try writeCodepoint(writer, self.codepoint_map[byte]);
         }
     }
 
@@ -290,7 +320,7 @@ pub const FontEncoding = struct {
 
             // Check for multi-character mapping first (ligatures)
             if (self.cmap_multi.get(code.value)) |utf8_str| {
-                try writer.writeAll(utf8_str);
+                try writeNormalizedUTF8(writer, utf8_str);
                 continue;
             }
 
@@ -337,16 +367,7 @@ pub const FontEncoding = struct {
 
             const final_codepoint = codepoint orelse code.value;
 
-            if (final_codepoint == 0) {
-                try writer.writeByte(' ');
-            } else if (final_codepoint <= 0x10FFFF) {
-                var buf: [4]u8 = undefined;
-                const len = std.unicode.utf8Encode(@intCast(final_codepoint), &buf) catch 1;
-                try writer.writeAll(buf[0..len]);
-            } else {
-                // Invalid codepoint
-                try writer.writeByte(' ');
-            }
+            try writeCodepoint(writer, final_codepoint);
         }
     }
 

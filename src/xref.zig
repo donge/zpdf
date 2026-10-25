@@ -92,18 +92,23 @@ pub fn parseXRef(hash_allocator: std.mem.Allocator, parse_allocator: std.mem.All
 
         if (offset >= data.len) return XRefParseError.InvalidXrefOffset;
 
-        const xref_start = data[@intCast(offset)..];
+        // Some writers put EOL/space between the startxref offset and the
+        // "xref" keyword (or the xref stream object). Skip it.
+        var trimmed: u64 = offset;
+        while (trimmed < data.len and isWhitespace(data[trimmed])) trimmed += 1;
+
+        const xref_start = data[@intCast(trimmed)..];
 
         if (std.mem.startsWith(u8, xref_start, "xref")) {
             // Traditional xref table
-            const trailer = try parseXrefTable(parse_allocator, data, offset, &xref);
+            const trailer = try parseXrefTable(parse_allocator, data, trimmed, &xref);
             if (xref.trailer.entries.len == 0) {
                 xref.trailer = trailer;
             }
             current_offset = getTrailerPrev(trailer);
         } else {
             // XRef stream (starts with object definition like "10 0 obj")
-            const trailer = try parseXrefStream(parse_allocator, data, offset, &xref);
+            const trailer = try parseXrefStream(parse_allocator, data, trimmed, &xref);
             if (xref.trailer.entries.len == 0) {
                 xref.trailer = trailer;
             }
@@ -161,6 +166,7 @@ fn parseXrefTable(
     xref: *XRefTable,
 ) XRefParseError!Object.Dict {
     var pos: usize = @intCast(offset);
+    while (pos < data.len and isWhitespace(data[pos])) pos += 1;
 
     // Skip "xref" keyword
     if (pos + 4 > data.len or !std.mem.eql(u8, data[pos..][0..4], "xref")) {
@@ -235,16 +241,20 @@ fn parseXrefTable(
             }
 
             const obj_num_u64 = std.math.add(u64, first_obj, i) catch return XRefParseError.InvalidXrefTable;
-            if (obj_num_u64 > std.math.maxInt(u32) or gen > std.math.maxInt(u16)) {
+            if (obj_num_u64 > std.math.maxInt(u32)) {
                 return XRefParseError.InvalidXrefTable;
             }
+            // The free-list head (object 0) is commonly written with
+            // generation 65536, which does not fit in a u16. Clamp instead of
+            // rejecting the whole table (poppler tolerates this as well).
+            const gen_u16: u16 = if (gen > std.math.maxInt(u16)) std.math.maxInt(u16) else @intCast(gen);
             const obj_num: u32 = @intCast(obj_num_u64);
 
             // Only add if not already present (first occurrence wins for incremental updates)
             if (!xref.entries.contains(obj_num)) {
                 xref.entries.put(obj_num, .{
                     .offset = entry_offset,
-                    .gen_or_index = @intCast(gen),
+                    .gen_or_index = gen_u16,
                     .entry_type = entry_type,
                 }) catch return XRefParseError.OutOfMemory;
             }

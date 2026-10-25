@@ -70,7 +70,7 @@ pub fn decompressStream(
     return final;
 }
 
-fn applyFilter(
+noinline fn applyFilter(
     allocator: std.mem.Allocator,
     data: []const u8,
     filter_name: []const u8,
@@ -133,28 +133,37 @@ fn decodeFlateDecode(
     return decodeFlateDecodeWithLimit(allocator, data, params, MAX_DECOMPRESSED_SIZE);
 }
 
-fn decodeFlateDecodeWithLimit(
+noinline fn decodeFlateDecodeWithLimit(
     allocator: std.mem.Allocator,
     data: []const u8,
     params: ?Object,
     max_size: usize,
 ) ![]u8 {
+    // The inflater's window and chunk buffer are large (~128 KiB). Keep them
+    // on the heap: cgo calls run on Go's scheduler stack, which is too small
+    // for a frame of that size when the goroutine lands on a secondary M.
+    const FlateState = struct {
+        window: [std.compress.flate.max_window_len]u8,
+        decomp: std.compress.flate.Decompress,
+        chunk: [64 * 1024]u8,
+    };
+    const state = try allocator.create(FlateState);
+    defer allocator.destroy(state);
+
     // Use Zig's built-in zlib/flate decompressor
     var input: std.Io.Reader = .fixed(data);
-    var decompress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
-    var decomp: std.compress.flate.Decompress = .init(&input, .zlib, &decompress_buffer);
+    state.decomp = .init(&input, .zlib, &state.window);
 
     // Pull bounded chunks so a compression bomb cannot allocate beyond the cap.
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
-    var chunk: [64 * 1024]u8 = undefined;
     while (true) {
-        const n = decomp.reader.readSliceShort(&chunk) catch return DecompressError.DecompressFailed;
+        const n = state.decomp.reader.readSliceShort(&state.chunk) catch return DecompressError.DecompressFailed;
         if (output.items.len > max_size or n > max_size - output.items.len) return DecompressError.OutputTooLarge;
         const new_len = output.items.len + n;
         try output.ensureTotalCapacityPrecise(allocator, new_len);
-        output.appendSliceAssumeCapacity(chunk[0..n]);
-        if (n < chunk.len) break;
+        output.appendSliceAssumeCapacity(state.chunk[0..n]);
+        if (n < state.chunk.len) break;
     }
 
     // Apply predictor if specified
@@ -475,7 +484,7 @@ fn decodeASCIIHex(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 // LZWDECODE
 // ============================================================================
 
-fn decodeLZW(
+noinline fn decodeLZW(
     allocator: std.mem.Allocator,
     data: []const u8,
     params: ?Object,
@@ -487,20 +496,17 @@ fn decodeLZW(
 
     // LZW uses variable-length codes
     const LzwTable = struct {
-        entries: [4096][]const u8,
-        size: u16,
+        entries: [4096][]const u8 = undefined,
+        size: u16 = 258,
 
-        fn init() @This() {
-            var table: @This() = undefined;
-            table.size = 258;
+        fn init(self: *@This()) void {
+            self.size = 258;
 
             // Initialize with single-byte entries
             var i: u16 = 0;
             while (i < 256) : (i += 1) {
-                table.entries[i] = &[_]u8{@truncate(i)};
+                self.entries[i] = &[_]u8{@truncate(i)};
             }
-
-            return table;
         }
 
         fn add(self: *@This(), entry: []const u8) bool {
@@ -512,7 +518,7 @@ fn decodeLZW(
             return false;
         }
 
-        fn get(self: @This(), code: u16) ?[]const u8 {
+        fn get(self: *const @This(), code: u16) ?[]const u8 {
             if (code < self.size) return self.entries[code];
             return null;
         }
@@ -524,8 +530,13 @@ fn decodeLZW(
         }
     };
 
-    var table = LzwTable.init();
-    defer table.deinit(allocator);
+    // 64 KiB of entries: heap, not the (small) cgo stack.
+    const table = try allocator.create(LzwTable);
+    defer {
+        table.deinit(allocator);
+        allocator.destroy(table);
+    }
+    table.init();
     var bit_pos: usize = 0;
     var code_size: u4 = 9;
     var prev_code: ?u16 = null;
@@ -538,7 +549,7 @@ fn decodeLZW(
         // Clear table
         if (code == 256) {
             table.deinit(allocator);
-            table = LzwTable.init();
+            table.init();
             code_size = 9;
             prev_code = null;
             continue;

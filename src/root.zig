@@ -1546,15 +1546,17 @@ pub const Document = struct {
         var images: std.ArrayList(ImageInfo) = .empty;
         errdefer images.deinit(allocator);
 
-        var lexer = interpreter.ContentLexer.init(scratch_allocator, content);
-        var operands: [128]interpreter.Operand = undefined;
+        const lexer = try interpreter.ContentLexer.create(scratch_allocator, content);
+        defer scratch_allocator.destroy(lexer);
+        const operands = try scratch_allocator.alloc(interpreter.Operand, 128);
+        defer scratch_allocator.free(operands);
         var operand_count: usize = 0;
 
         // Simple CTM tracking (only handles cm and basic state)
         var ctm: [6]f64 = .{ 1, 0, 0, 1, 0, 0 }; // identity
 
         while (try lexer.next()) |token| {
-            if (pushOperand(&operands, &operand_count, token)) continue;
+            if (pushOperand(operands, &operand_count, token)) continue;
 
             const op = token.operator;
             if (op.len > 0) {
@@ -1790,12 +1792,14 @@ pub const Document = struct {
             var cur = ctm;
             var stack: [16][6]f64 = undefined;
             var sp: usize = 0;
-            var lexer = interpreter.ContentLexer.init(self.scratch, content);
-            var operands: [64]interpreter.Operand = undefined;
+            const lexer = try interpreter.ContentLexer.create(self.scratch, content);
+            defer self.scratch.destroy(lexer);
+            const operands = try self.scratch.alloc(interpreter.Operand, 64);
+            defer self.scratch.free(operands);
             var n: usize = 0;
 
             while (try lexer.next()) |token| {
-                if (pushOperand(&operands, &n, token)) continue;
+                if (pushOperand(operands, &n, token)) continue;
                 const op = token.operator;
                 if (op.len > 0) {
                     if (op.len == 1 and op[0] == 'q') {
@@ -2475,8 +2479,10 @@ fn extractContentStream(
     allocator: std.mem.Allocator,
     writer: anytype,
 ) !void {
-    var lexer = interpreter.ContentLexer.init(allocator, content);
-    var operands: [128]interpreter.Operand = undefined;
+    const lexer = try interpreter.ContentLexer.create(allocator, content);
+    defer allocator.destroy(lexer);
+    const operands = try allocator.alloc(interpreter.Operand, 128);
+    defer allocator.free(operands);
     var operand_count: usize = 0;
 
     var current_font: ?*const encoding.FontEncoding = null;
@@ -2511,7 +2517,7 @@ fn extractContentStream(
     var text_pos: usize = 0;
 
     while (try lexer.next()) |token| {
-        if (pushOperand(&operands, &operand_count, token)) continue;
+        if (pushOperand(operands, &operand_count, token)) continue;
 
         // token is an operator
         const op = token.operator;

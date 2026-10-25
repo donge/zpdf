@@ -979,7 +979,7 @@ pub fn parseToUnicodeCMap(allocator: std.mem.Allocator, stream: Object.Stream, e
 
     // Sort ranges by src_start for binary search
     const owned_ranges = try ranges.toOwnedSlice(allocator);
-    std.mem.sort(FontEncoding.CMapRange, owned_ranges, {}, struct {
+    std.mem.sortUnstable(FontEncoding.CMapRange, owned_ranges, {}, struct {
         fn lessThan(_: void, a: FontEncoding.CMapRange, b: FontEncoding.CMapRange) bool {
             return a.src_start < b.src_start;
         }

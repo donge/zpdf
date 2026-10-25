@@ -122,8 +122,10 @@ pub fn ContentInterpreter(comptime Writer: type) type {
 
         /// Process a content stream
         pub fn process(self: *Self, content: []const u8) !void {
-            var lexer = ContentLexer.init(self.allocator, content);
-            var operand_stack: [128]Operand = undefined;
+            const lexer = try ContentLexer.create(self.allocator, content);
+            defer self.allocator.destroy(lexer);
+            const operand_stack = try self.allocator.alloc(Operand, 128);
+            defer self.allocator.free(operand_stack);
             var stack_size: usize = 0;
 
             while (try lexer.next()) |token| {
@@ -509,6 +511,16 @@ pub const ContentLexer = struct {
         array: []const Operand,
     };
 
+    pub fn create(allocator: std.mem.Allocator, data: []const u8) !*ContentLexer {
+        const self = try allocator.create(ContentLexer);
+        self.* = .{
+            .data = data,
+            .pos = 0,
+            .allocator = allocator,
+        };
+        return self;
+    }
+
     pub fn init(allocator: std.mem.Allocator, data: []const u8) ContentLexer {
         return .{
             .data = data,
@@ -846,7 +858,8 @@ test "lexer basic tokens" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     // BT
     const t1 = (try lexer.next()).?;
@@ -886,7 +899,8 @@ test "lexer TJ array" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const arr = (try lexer.next()).?;
     try std.testing.expect(arr == .array);
@@ -901,7 +915,8 @@ test "lexer hex string decoding" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const hex = (try lexer.next()).?;
     try std.testing.expect(hex == .hex_string);
@@ -913,7 +928,8 @@ test "lexer hex string with whitespace" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const hex = (try lexer.next()).?;
     try std.testing.expect(hex == .hex_string);
@@ -925,7 +941,8 @@ test "lexer hex string odd digits" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const hex = (try lexer.next()).?;
     try std.testing.expect(hex == .hex_string);
@@ -939,7 +956,8 @@ test "lexer hex string CID codes" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const hex = (try lexer.next()).?;
     try std.testing.expect(hex == .hex_string);
@@ -955,7 +973,8 @@ test "lexer string escape sequences" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const str = (try lexer.next()).?;
     try std.testing.expect(str == .string);
@@ -967,7 +986,8 @@ test "lexer string octal escape" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const str = (try lexer.next()).?;
     try std.testing.expect(str == .string);
@@ -979,7 +999,8 @@ test "lexer nested parentheses" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const str = (try lexer.next()).?;
     try std.testing.expect(str == .string);
@@ -991,7 +1012,8 @@ test "lexer negative numbers" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const n1 = (try lexer.next()).?;
     try std.testing.expectEqual(@as(f64, -100), n1.number);
@@ -1007,7 +1029,8 @@ test "lexer skips BI/EI inline image block" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     var tj_count: usize = 0;
     while (try lexer.next()) |tok| {
@@ -1031,7 +1054,8 @@ test "lexer text operators" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = ContentLexer.init(arena.allocator(), content);
+    const lexer = try ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     const ops = [_][]const u8{ "BT", "Tf", "Tj", "TJ", "T*", "Td", "TD", "Tm", "'", "\"", "ET" };
     for (ops) |expected| {

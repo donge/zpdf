@@ -141,7 +141,8 @@ test "content lexer tokens" {
     const content = "BT /F1 12 Tf (Hello) Tj ET";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var lexer = zpdf.interpreter.ContentLexer.init(arena.allocator(), content);
+    const lexer = try zpdf.interpreter.ContentLexer.create(arena.allocator(), content);
+    defer arena.allocator().destroy(lexer);
 
     // BT operator
     const t1 = (try lexer.next()).?;

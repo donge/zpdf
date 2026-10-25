@@ -140,7 +140,7 @@ pub fn sortGeometric(allocator: std.mem.Allocator, spans: []const TextSpan) ![]u
 
     const line_threshold: f64 = 3; // Tight threshold to match PyMuPDF
 
-    std.mem.sort(TextSpan, sorted, line_threshold, struct {
+    std.mem.sortUnstable(TextSpan, sorted, line_threshold, struct {
         fn cmp(threshold: f64, a: TextSpan, b: TextSpan) bool {
             // Group into rows by Y coordinate
             const a_row = @as(i64, @intFromFloat(a.y0 / threshold));
@@ -225,7 +225,7 @@ pub fn analyzeLayout(allocator: std.mem.Allocator, spans: []const TextSpan, page
     const sorted = try allocator.alloc(TextSpan, spans.len);
     @memcpy(sorted, spans);
 
-    std.mem.sort(TextSpan, sorted, line_threshold, struct {
+    std.mem.sortUnstable(TextSpan, sorted, line_threshold, struct {
         fn cmp(threshold: f64, a: TextSpan, b: TextSpan) bool {
             const a_row = @as(i64, @intFromFloat(a.y0 / threshold));
             const b_row = @as(i64, @intFromFloat(b.y0 / threshold));

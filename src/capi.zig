@@ -7,7 +7,7 @@ const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 
 pub const ZpdfDocument = opaque {};
 
-var c_allocator: std.mem.Allocator = std.heap.page_allocator;
+const c_allocator: std.mem.Allocator = std.heap.c_allocator;
 
 pub const CError = enum(c_int) {
     none = 0,

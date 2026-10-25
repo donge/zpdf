@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/capi.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
 
@@ -41,6 +42,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/capi.zig"),
             .target = target,
             .optimize = optimize,
+            .pic = true,
+            .link_libc = true,
         }),
     });
     const install_capi = b.addInstallArtifact(capi_lib, .{});

@@ -81,8 +81,8 @@ include process start (CLI); poppler was measured in-process through docconv
 
 | | upstream zpdf | this fork | poppler (docconv) |
 |---|---:|---:|---:|
-| total wall time | 0.21 s | **0.18 s** (in-process) / 0.25 s (CLI) | 1.00 s |
-| median ms/page | 0.52 | **0.16** (in-process) / 0.57 (CLI) | 0.57 (in-process) |
+| total wall time | 0.21 s | **0.14 s** (in-process) | 1.00 s |
+| median ms/page | 0.52 | **0.10** (in-process) | 0.57 (in-process) |
 | text docs returning nothing | **3** | **0** | 12 scanned (expected) |
 | content coverage, mean (NFKC, vs poppler) | 0.913 | **0.993** | 1.000 |
 | Kangxi radicals left | many | **0** | 0 |

@@ -8,7 +8,7 @@ by running it against 50 real-world PDFs (773 pages, Chinese + English, Office
 exports, Keynote/pdfcpu rewrites, scanned files).
 
 - **Text only.** No rendering, no OCR, no models, no image decoding.
-- **~5× faster than poppler** on the reference corpus (in-process: 0.18 s vs
+- **~7× faster than poppler** on the reference corpus (in-process: 0.14 s vs
   1.00 s for 50 PDFs / 773 pages).
 - **99.3 % of poppler's characters**, with cleaner output (no zero-width
   characters, no U+FFFD, no Kangxi-radical leaks).
@@ -22,7 +22,7 @@ median. All engines in-process except where noted.
 
 | engine | total | median ms/page | mean coverage vs poppler | empty* |
 |---|---:|---:|---:|---:|
-| **zpdf** | **0.18 s** | **0.16** | **0.993** | **0** |
+| **zpdf** | **0.14 s** | **0.10** | **0.993** | **0** |
 | poppler (docconv) | 1.00 s | 0.57 | 1.000 | 0 |
 | MuPDF / PyMuPDF | 0.84 s | 0.67 | 0.999 | 0 |
 | PDFium / pypdfium2 | 1.07 s | 0.71 | 0.995 | 0 |

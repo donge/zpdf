@@ -1,0 +1,31 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# Editor files
+*.swp
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+__pycache__/
+*.egg-info/
+python/zpdf/libzpdf.dylib
+python/zpdf/libzpdf.so
+python/zpdf/zpdf.dll
+python/build/
+python/dist/
+
+# Test files
+test/
+*.pdf
+
+# Downloaded benchmark corpora and generated reports
+benchmark/corpora/
+benchmark/results/
+
+# WASM binary (built by CI)
+web/zpdf.wasm

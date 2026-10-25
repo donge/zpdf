@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZPDF - Fast PDF Text Extraction</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        h1 {
+            color: #1a1a2e;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 24px;
+        }
+
+        .drop-zone {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            background: white;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: #4a90d9;
+            background: #f0f7ff;
+        }
+
+        .drop-zone input {
+            display: none;
+        }
+
+        .drop-zone-text {
+            font-size: 16px;
+            color: #666;
+        }
+
+        .drop-zone-text strong {
+            color: #4a90d9;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .stat {
+            background: white;
+            padding: 12px 20px;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a2e;
+        }
+
+        .output-container {
+            margin-top: 20px;
+        }
+
+        .output-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .output-header h3 {
+            margin: 0;
+        }
+
+        .copy-btn {
+            background: #4a90d9;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .copy-btn:hover {
+            background: #357abd;
+        }
+
+        #output {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            min-height: 300px;
+            max-height: 600px;
+            overflow: auto;
+            white-space: pre-wrap;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4a90d9;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        footer {
+            margin-top: 40px;
+            text-align: center;
+            color: #999;
+            font-size: 13px;
+        }
+
+        footer a {
+            color: #4a90d9;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>ZPDF</h1>
+    <p class="subtitle">Fast PDF text extraction in the browser via WebAssembly</p>
+
+    <div class="drop-zone" id="dropZone">
+        <input type="file" id="fileInput" accept=".pdf,application/pdf">
+        <div class="drop-zone-text">
+            <strong>Click to upload</strong> or drag and drop<br>
+            <small>PDF files only</small>
+        </div>
+    </div>
+
+    <div class="loading" id="loading">
+        <div class="spinner"></div>
+        Extracting text...
+    </div>
+
+    <div class="error hidden" id="error"></div>
+
+    <div class="stats hidden" id="stats">
+        <div class="stat">
+            <div class="stat-label">Pages</div>
+            <div class="stat-value" id="pageCount">-</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Characters</div>
+            <div class="stat-value" id="charCount">-</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Time</div>
+            <div class="stat-value" id="extractTime">-</div>
+        </div>
+        <div class="stat">
+            <div class="stat-label">Speed</div>
+            <div class="stat-value" id="speed">-</div>
+        </div>
+    </div>
+
+    <div class="output-container hidden" id="outputContainer">
+        <div class="output-header">
+            <h3>Extracted Text</h3>
+            <button class="copy-btn" id="copyBtn">Copy to Clipboard</button>
+        </div>
+        <pre id="output"></pre>
+    </div>
+
+    <footer>
+        Powered by <a href="https://github.com/Lulzx/zpdf">ZPDF</a> -
+        Pure Zig PDF parser compiled to WebAssembly (~90KB)
+    </footer>
+
+    <script>
+        // ZPDF WebAssembly wrapper
+        class ZPDF {
+            constructor() {
+                this.wasm = null;
+                this.memory = null;
+            }
+
+            async init() {
+                const response = await fetch('zpdf.wasm');
+                const bytes = await response.arrayBuffer();
+
+                const imports = {
+                    env: {
+                        // Required by WASM allocator
+                    }
+                };
+
+                const result = await WebAssembly.instantiate(bytes, imports);
+                this.wasm = result.instance.exports;
+                this.memory = this.wasm.memory;
+            }
+
+            // Allocate memory in WASM
+            alloc(size) {
+                return this.wasm.wasm_alloc(size);
+            }
+
+            // Free memory in WASM
+            free(ptr, size) {
+                this.wasm.wasm_free(ptr, size);
+            }
+
+            // Copy data to WASM memory
+            copyToWasm(data) {
+                const ptr = this.alloc(data.length);
+                if (!ptr) throw new Error('Failed to allocate memory');
+
+                const view = new Uint8Array(this.memory.buffer, ptr, data.length);
+                view.set(data);
+                return { ptr, len: data.length };
+            }
+
+            // Read string from WASM memory
+            readString(ptr, len) {
+                const view = new Uint8Array(this.memory.buffer, ptr, len);
+                return new TextDecoder().decode(view);
+            }
+
+            // Open PDF from ArrayBuffer
+            openPDF(data) {
+                const { ptr, len } = this.copyToWasm(new Uint8Array(data));
+                const handle = this.wasm.zpdf_open_memory(ptr, len);
+
+                if (handle < 0) {
+                    this.free(ptr, len);
+                    throw new Error('Failed to open PDF');
+                }
+
+                return {
+                    handle,
+                    dataPtr: ptr,
+                    dataLen: len
+                };
+            }
+
+            // Close PDF
+            closePDF(doc) {
+                this.wasm.zpdf_close(doc.handle);
+                this.free(doc.dataPtr, doc.dataLen);
+            }
+
+            // Get page count
+            getPageCount(doc) {
+                return this.wasm.zpdf_page_count(doc.handle);
+            }
+
+            // Extract text from a page
+            extractPage(doc, pageNum) {
+                // Allocate space for output length
+                const lenPtr = this.alloc(4);
+                if (!lenPtr) throw new Error('Failed to allocate memory');
+
+                const textPtr = this.wasm.zpdf_extract_page(doc.handle, pageNum, lenPtr);
+
+                if (!textPtr) {
+                    this.free(lenPtr, 4);
+                    return '';
+                }
+
+                const lenView = new Uint32Array(this.memory.buffer, lenPtr, 1);
+                const textLen = lenView[0];
+
+                const text = this.readString(textPtr, textLen);
+
+                this.wasm.wasm_free(textPtr, textLen);
+                this.free(lenPtr, 4);
+
+                return text;
+            }
+
+            // Extract all text
+            extractAll(doc) {
+                // Allocate space for output length
+                const lenPtr = this.alloc(4);
+                if (!lenPtr) throw new Error('Failed to allocate memory');
+
+                const textPtr = this.wasm.zpdf_extract_all(doc.handle, lenPtr);
+
+                if (!textPtr) {
+                    this.free(lenPtr, 4);
+                    return '';
+                }
+
+                const lenView = new Uint32Array(this.memory.buffer, lenPtr, 1);
+                const textLen = lenView[0];
+
+                const text = this.readString(textPtr, textLen);
+
+                this.wasm.wasm_free(textPtr, textLen);
+                this.free(lenPtr, 4);
+
+                return text;
+            }
+        }
+
+        // UI handling
+        let zpdf = null;
+
+        async function init() {
+            zpdf = new ZPDF();
+            try {
+                await zpdf.init();
+                console.log('ZPDF initialized');
+            } catch (e) {
+                showError('Failed to load WASM module: ' + e.message);
+            }
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('error');
+            el.textContent = msg;
+            el.classList.remove('hidden');
+        }
+
+        function hideError() {
+            document.getElementById('error').classList.add('hidden');
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('active', show);
+        }
+
+        async function processFile(file) {
+            if (!zpdf) {
+                showError('WASM not loaded yet');
+                return;
+            }
+
+            hideError();
+            showLoading(true);
+            document.getElementById('stats').classList.add('hidden');
+            document.getElementById('outputContainer').classList.add('hidden');
+
+            try {
+                const data = await file.arrayBuffer();
+
+                const startTime = performance.now();
+                const doc = zpdf.openPDF(data);
+                const pageCount = zpdf.getPageCount(doc);
+                const text = zpdf.extractAll(doc);
+                zpdf.closePDF(doc);
+                const endTime = performance.now();
+
+                const duration = endTime - startTime;
+                const pagesPerSec = (pageCount / (duration / 1000)).toFixed(1);
+
+                // Update stats
+                document.getElementById('pageCount').textContent = pageCount;
+                document.getElementById('charCount').textContent = text.length.toLocaleString();
+                document.getElementById('extractTime').textContent = duration.toFixed(1) + 'ms';
+                document.getElementById('speed').textContent = pagesPerSec + ' pages/s';
+                document.getElementById('stats').classList.remove('hidden');
+
+                // Show text
+                document.getElementById('output').textContent = text || '(No text extracted)';
+                document.getElementById('outputContainer').classList.remove('hidden');
+
+            } catch (e) {
+                showError('Error processing PDF: ' + e.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            init();
+
+            const dropZone = document.getElementById('dropZone');
+            const fileInput = document.getElementById('fileInput');
+
+            dropZone.addEventListener('click', () => fileInput.click());
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+
+            dropZone.addEventListener('dragleave', () => {
+                dropZone.classList.remove('dragover');
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+
+                const file = e.dataTransfer.files[0];
+                if (file && file.type === 'application/pdf') {
+                    processFile(file);
+                } else {
+                    showError('Please drop a PDF file');
+                }
+            });
+
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    processFile(file);
+                }
+            });
+
+            document.getElementById('copyBtn').addEventListener('click', () => {
+                const text = document.getElementById('output').textContent;
+                navigator.clipboard.writeText(text).then(() => {
+                    const btn = document.getElementById('copyBtn');
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => btn.textContent = 'Copy to Clipboard', 2000);
+                });
+            });
+        });
+    </script>
+</body>
+</html>

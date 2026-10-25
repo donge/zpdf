@@ -28,7 +28,7 @@ export fn zpdf_abi_version() u32 {
 }
 
 export fn zpdf_last_error() c_int {
-    return @intFromEnum(last_error);
+    return @backingInt(last_error);
 }
 
 export fn zpdf_open(path_ptr: [*:0]const u8) ?*ZpdfDocument {

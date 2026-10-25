@@ -68,8 +68,7 @@ pub const ArrayListWriter = struct {
 pub const has_legacy_fs_file = @hasDecl(std.fs, "File");
 pub const File = if (has_legacy_fs_file) std.fs.File else std.Io.File;
 
-var current_io: if (has_legacy_fs_file) void else ?std.Io = if (has_legacy_fs_file)
-{} else null;
+var current_io: if (has_legacy_fs_file) void else ?std.Io = if (has_legacy_fs_file) {} else null;
 
 pub fn setIo(io_value: anytype) void {
     if (comptime !has_legacy_fs_file) current_io = io_value;
@@ -222,7 +221,7 @@ pub fn nanoTimestamp() i128 {
     return if (comptime @hasDecl(std.time, "nanoTimestamp"))
         std.time.nanoTimestamp()
     else
-        @intCast(std.Io.Timestamp.now(currentIo(), .awake).nanoseconds);
+        @intCast(std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds);
 }
 
 pub fn runIgnored(argv: []const []const u8, allocator: std.mem.Allocator) !u8 {

@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: Zig 0.15.2
+    name: Zig 0.17.0
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.17.0
 
       - name: Run tests
         run: zig build test
@@ -54,7 +54,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.17.0
 
       - name: Build static library
         run: zig build capi -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} --prefix dist

@@ -6,6 +6,7 @@
 //! extracts this fixture at >10k pages/s.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const zpdf = @import("root.zig");
 const testpdf = @import("testpdf.zig");
 
@@ -29,20 +30,20 @@ test "gate: 200-page throughput and text integrity" {
     defer doc.close();
     try std.testing.expectEqual(PAGE_COUNT, doc.pageCount());
 
-    var timer = try std.time.Timer.start();
+    const started = compat.nanoTimestamp();
     const text = try doc.extractAllTextFast(allocator);
     defer allocator.free(text);
-    const ns = timer.read();
+    const elapsed_ns = compat.nanoTimestamp() - started;
 
     const pages_per_sec = @as(f64, @floatFromInt(PAGE_COUNT)) * std.time.ns_per_s /
-        @as(f64, @floatFromInt(@max(ns, 1)));
+        @as(f64, @floatFromInt(@max(elapsed_ns, 1)));
     std.debug.print("\nbench gate: {d} pages in {d} ms ({d:.0} pages/s, floor {d:.0})\n", .{
-        PAGE_COUNT, ns / std.time.ns_per_ms, pages_per_sec, MIN_PAGES_PER_SEC,
+        PAGE_COUNT, @divTrunc(elapsed_ns, std.time.ns_per_ms), pages_per_sec, MIN_PAGES_PER_SEC,
     });
     if (pages_per_sec < MIN_PAGES_PER_SEC) {
         std.debug.print(
             "\nbench gate: {d:.0} pages/s < {d:.0} pages/s ({d} pages in {d} ms)\n",
-            .{ pages_per_sec, MIN_PAGES_PER_SEC, PAGE_COUNT, ns / std.time.ns_per_ms },
+            .{ pages_per_sec, MIN_PAGES_PER_SEC, PAGE_COUNT, @divTrunc(elapsed_ns, std.time.ns_per_ms) },
         );
         return error.BenchGateFailed;
     }

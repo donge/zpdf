@@ -3,7 +3,7 @@
 Upstream: [Lulzx/zpdf](https://github.com/Lulzx/zpdf) @ `7ea3458` (2026-08-13), CC0-1.0.
 
 This fork keeps upstream's design (zero-copy, stream-order extraction, no
-dependencies, Zig 0.15.2) and fixes defects found while comparing it with
+dependencies, Zig 0.17.0) and fixes defects found while comparing it with
 poppler on 50 real-world PDFs (773 pages, 38 with a text layer, Chinese and
 English, including Office exports, Keynote/pdfcpu rewrites and scanned files).
 
@@ -126,7 +126,7 @@ a text-extraction one.
 
 ## Tests and gates
 
-`zig build test` runs the full suite (591 tests). The gate files are:
+`zig build test` runs the full suite. The gate files are:
 
 * `src/regression_test.zig` — one synthetic PDF per fixed defect:
   CRLF-before-`xref` + generation 65536, text only reachable through a Form
@@ -152,7 +152,7 @@ root module); CI runs `zig build test` and `zig build gate` on Zig 0.15.2, plus
   CFF glyph names. A TrueType `cmap` fallback would cover subset fonts that
   only carry glyph IDs.
 * **Zig version.** Upstream targets Zig 0.15.2; this fork is built and tested
-  with `zig@0.15` (CI pinned to 0.15.2; 0.16/0.17 need an `std.Io` migration).
+  with Zig 0.17.0 (CI pinned to 0.17.0).
 
 ## Build
 

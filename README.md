@@ -65,12 +65,40 @@ Selected documents:
 4. **Line reconstruction** — track the CTM (`q`/`Q`/`cm`) and break lines on
    device-space baseline changes; inherit the CTM into forms. Diagram PDFs went
    from one line per page to proper lines without losing characters.
+5. **Font glyph names** — resolve `/Differences` names used by foundry fonts
+   (`f_l`, `T_h`, `zero.oldstyle`, `a.sc`, …) by splitting components and
+   stripping suffixes. This recovered missing digits and ligatures on the
+   opendataloader corpus (see below).
 
 See [docs/FORK.md](docs/FORK.md) for details and the comparison methodology.
 
+## External corpus (opendataloader-bench)
+
+The 200-document corpus used by `pdf-inspector` / opendataloader-bench (200
+pages, English, Markdown ground truth). Accuracy is measured against the plain
+text of the ground truth: 4-gram F1 (content, order-insensitive) and LCS
+coverage (order-aware recall), micro-averaged per document. All engines
+in-process, warm cache, warm-up + 3 runs.
+
+| engine | F1 mean | F1 median | LCS mean | LCS median | total | median ms/doc |
+|---|---:|---:|---:|---:|---:|---:|
+| **zpdf** | 0.927 | **0.961** | **0.922** | **0.972** | **0.06 s** | **0.20** |
+| poppler (CLI) | **0.936** | 0.962 | 0.920 | 0.970 | 2.06 s | 9.87 |
+| pdf-inspector | 0.922 | 0.953 | 0.914 | 0.960 | 0.16 s | 0.50 |
+| pdf_oxide | 0.920 | 0.938 | 0.903 | 0.950 | 0.46 s | 2.00 |
+
+zpdf is **2.5× faster than pdf-inspector, 10× faster than pdf_oxide** and has
+the best median/mean LCS. The 0.9-point F1 gap to poppler comes from five
+documents where zpdf also extracts an additional text layer that the ground
+truth (and poppler) omit; on the 194 text-layer documents zpdf scores 0.941 F1
+/ 0.935 LCS vs poppler 0.948 / 0.935.
+
+> pdf_oxide's own 356/3,830-PDF corpus is not published, so it was evaluated on
+> this same 200-document set.
+
 ## Build
 
-Requires Zig **0.15.2**.
+Requires Zig **0.17.0**.
 
 ```bash
 zig build -Doptimize=ReleaseFast          # CLI + Zig library
@@ -133,7 +161,7 @@ A Go binding lives at [Servicewall/zpdf-go](https://github.com/Servicewall/zpdf-
 ## Tests and gates
 
 ```bash
-zig build test    # 591 tests
+zig build test    # full suite
 zig build gate    # regression + benchmark gate (200 pages, floor 100 pages/s)
 ```
 

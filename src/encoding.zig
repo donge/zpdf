@@ -302,7 +302,15 @@ pub const FontEncoding = struct {
                 continue;
             }
 
-            try writeCodepoint(writer, self.codepoint_map[byte]);
+            const cp = self.codepoint_map[byte];
+            if (cp == 0 and byte >= 0x20 and byte < 0x7F) {
+                // No ToUnicode/Encoding mapping: many simple PDF fonts use
+                // ASCII codes directly. Emitting the byte is better than a
+                // space (poppler does the same fallback).
+                try writer.writeByte(byte);
+            } else {
+                try writeCodepoint(writer, cp);
+            }
         }
     }
 
@@ -521,7 +529,7 @@ pub fn parseFontEncoding(
                     }
 
                     if (dict.getArray("Differences")) |diffs| {
-                        try applyDifferences(&encoding, diffs);
+                        try applyDifferences(allocator, &encoding, diffs);
                     }
                 },
                 else => {},
@@ -862,7 +870,44 @@ pub fn applyNamedEncoding(encoding: *FontEncoding, name: []const u8) void {
     // MacExpertEncoding omitted - rarely used
 }
 
-pub fn applyDifferences(encoding: *FontEncoding, diffs: []Object) !void {
+/// Map a /Differences glyph name to a code. Composite names used by
+/// foundry fonts (`f_l`, `T_h`, `.oldstyle`, `.sc`, `.a`) are resolved by
+/// splitting components or stripping the suffix; multi-character results go to
+/// cmap_multi.
+fn setGlyphMapping(allocator: std.mem.Allocator, encoding: *FontEncoding, code: u16, name: []const u8) !void {
+    if (name.len == 0) return;
+    const single = glyphNameToUnicode(name);
+    if (single != 0) {
+        encoding.codepoint_map[code] = single;
+        return;
+    }
+    if (std.mem.indexOfScalar(u8, name, '_') != null) {
+        var out: [12]u8 = undefined;
+        var n: usize = 0;
+        var it = std.mem.tokenizeScalar(u8, name, '_');
+        while (it.next()) |part| {
+            const cp = glyphNameToUnicode(part);
+            if (cp == 0) return;
+            var buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(@intCast(cp), &buf) catch return;
+            if (n + len > out.len) return;
+            @memcpy(out[n..][0..len], buf[0..len]);
+            n += len;
+        }
+        if (n == 0) return;
+        const owned = try allocator.dupe(u8, out[0..n]);
+        try encoding.cmap_multi.put(allocator, code, owned);
+        return;
+    }
+    if (std.mem.lastIndexOfScalar(u8, name, '.')) |dot| {
+        if (dot > 0) {
+            const base = glyphNameToUnicode(name[0..dot]);
+            if (base != 0) encoding.codepoint_map[code] = base;
+        }
+    }
+}
+
+pub fn applyDifferences(allocator: std.mem.Allocator, encoding: *FontEncoding, diffs: []Object) !void {
     var code: u16 = 0;
 
     for (diffs) |item| {
@@ -872,7 +917,7 @@ pub fn applyDifferences(encoding: *FontEncoding, diffs: []Object) !void {
             },
             .name => |name| {
                 if (code < 256) {
-                    encoding.codepoint_map[code] = glyphNameToUnicode(name);
+                    try setGlyphMapping(allocator, encoding, code, name);
                     code += 1;
                 }
             },

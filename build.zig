@@ -84,10 +84,6 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
-
     const run_step = b.step("run", "Run the zpdf CLI");
     run_step.dependOn(&run_cmd.step);
 
@@ -252,10 +248,6 @@ pub fn build(b: *std.Build) void {
 
     const bench_cmd = b.addRunArtifact(bench);
     bench_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        bench_cmd.addArgs(args);
-    }
 
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_cmd.step);

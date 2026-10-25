@@ -95,7 +95,7 @@ pub fn parseXRef(hash_allocator: std.mem.Allocator, parse_allocator: std.mem.All
         // Some writers put EOL/space between the startxref offset and the
         // "xref" keyword (or the xref stream object). Skip it.
         var trimmed: u64 = offset;
-        while (trimmed < data.len and isWhitespace(data[trimmed])) trimmed += 1;
+        while (trimmed < data.len and isWhitespace(data[@intCast(trimmed)])) trimmed += 1;
 
         const xref_start = data[@intCast(trimmed)..];
 

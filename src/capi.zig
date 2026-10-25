@@ -24,7 +24,7 @@ fn setError(err: CError) void {
 }
 
 export fn zpdf_abi_version() u32 {
-    return 1;
+    return 2;
 }
 
 export fn zpdf_last_error() c_int {
@@ -677,6 +677,96 @@ export fn zpdf_get_page_images(handle: ?*ZpdfDocument, page_num: c_int, out: *?[
 
 export fn zpdf_free_images(ptr: ?[*]CImageInfo, count: usize) void {
     if (ptr) |p| {
+        c_allocator.free(p[0..count]);
+    }
+}
+
+// =========================================================================
+// Page images for OCR (opt-in; callers that do not need images pay nothing)
+// =========================================================================
+
+pub const ZpdfPageImage = extern struct {
+    page: c_int,
+    index: c_int,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    width: u32,
+    height: u32,
+    format: c_int, // 0=RGB24 1=GRAY8 2=JPEG 3=CCITT 4=JPX
+    bpc: c_int,
+    colorspace: c_int, // 0=gray 1=rgb 2=cmyk 3=indexed
+    ccitt_k: c_int,
+    black_is_1: bool,
+    data: ?[*]u8,
+    len: usize,
+};
+
+/// Extract the images of one page. Returns 0 on success; `*out` must be freed
+/// with zpdf_free_page_images.
+export fn zpdf_extract_page_images(
+    handle: ?*ZpdfDocument,
+    page_num: c_int,
+    out: *?[*]ZpdfPageImage,
+    count: *usize,
+) c_int {
+    setError(.none);
+    out.* = null;
+    count.* = 0;
+    const h = handle orelse {
+        setError(.invalid_handle);
+        return -1;
+    };
+    const doc: *zpdf.Document = @ptrCast(@alignCast(h));
+    if (page_num < 0 or @as(usize, @intCast(page_num)) >= doc.pages.items.len) {
+        setError(.page_not_found);
+        return -1;
+    }
+    const imgs = doc.extractPageImages(@intCast(page_num), c_allocator) catch {
+        setError(.extraction_failed);
+        return -1;
+    };
+    if (imgs.len == 0) {
+        c_allocator.free(imgs);
+        return 0;
+    }
+    const arr = c_allocator.alloc(ZpdfPageImage, imgs.len) catch {
+        for (imgs) |img| c_allocator.free(img.data);
+        c_allocator.free(imgs);
+        setError(.out_of_memory);
+        return -1;
+    };
+    for (imgs, 0..) |img, i| {
+        arr[i] = .{
+            .page = page_num,
+            .index = @intCast(i),
+            .x0 = img.rect[0],
+            .y0 = img.rect[1],
+            .x1 = img.rect[2],
+            .y1 = img.rect[3],
+            .width = img.width,
+            .height = img.height,
+            .format = @backingInt(img.format),
+            .bpc = img.bpc,
+            .colorspace = @backingInt(img.colorspace),
+            .ccitt_k = img.ccitt_k,
+            .black_is_1 = img.black_is_1,
+            .data = img.data.ptr,
+            .len = img.data.len,
+        };
+    }
+    c_allocator.free(imgs);
+    out.* = arr.ptr;
+    count.* = arr.len;
+    return 0;
+}
+
+export fn zpdf_free_page_images(ptr: ?[*]ZpdfPageImage, count: usize) void {
+    if (ptr) |p| {
+        for (0..count) |i| {
+            if (p[i].data) |d| c_allocator.free(d[0..p[i].len]);
+        }
         c_allocator.free(p[0..count]);
     }
 }

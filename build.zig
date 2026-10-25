@@ -197,6 +197,15 @@ pub fn build(b: *std.Build) void {
     });
     const run_regression_tests = b.addRunArtifact(regression_tests);
 
+    const image_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/image_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_image_tests = b.addRunArtifact(image_tests);
+
     const cjk_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cjk_test.zig"),
@@ -240,12 +249,14 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_regression_tests.step);
     test_step.dependOn(&run_gate_tests.step);
     test_step.dependOn(&run_cjk_tests.step);
+    test_step.dependOn(&run_image_tests.step);
 
     // Quality + benchmark gate (same tests, convenient separate step for CI).
     const gate_step = b.step("gate", "Run regression and benchmark gates");
     gate_step.dependOn(&run_regression_tests.step);
     gate_step.dependOn(&run_gate_tests.step);
     gate_step.dependOn(&run_cjk_tests.step);
+    gate_step.dependOn(&run_image_tests.step);
 
     // Benchmark
     const bench = b.addExecutable(.{

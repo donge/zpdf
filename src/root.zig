@@ -1646,6 +1646,408 @@ pub const Document = struct {
         return .{ .width = width, .height = height };
     }
 
+    // =========================================================================
+    // Image extraction (OCR input)
+    // =========================================================================
+
+    pub const ImageFormat = enum(u8) { rgb24 = 0, gray8 = 1, jpeg = 2, ccitt = 3, jpx = 4 };
+    pub const ImageColorSpace = enum(u8) { gray = 0, rgb = 1, cmyk = 2, indexed = 3 };
+
+    pub const PageImage = struct {
+        rect: [4]f64,
+        width: u32,
+        height: u32,
+        format: ImageFormat,
+        bpc: u8,
+        colorspace: ImageColorSpace,
+        ccitt_k: i32 = 0,
+        black_is_1: bool = false,
+        data: []u8,
+    };
+
+    const max_page_images: usize = 8;
+    const max_image_pixels: u64 = 40_000_000;
+    const max_image_bytes: usize = 32 << 20;
+    const min_image_side: u32 = 64;
+
+    pub fn freePageImages(allocator: std.mem.Allocator, images: []PageImage) void {
+        for (images) |img| allocator.free(img.data);
+        allocator.free(images);
+    }
+
+    /// Extract the images on a page for OCR. This is opt-in: callers that do
+    /// not need images never pay for it. DCT/JPX/CCITT streams are returned raw
+    /// (DCT is passed to the OCR engine without re-encoding); Flate/LZW/
+    /// RunLength samples are converted to RGB24 or GRAY8.
+    pub fn extractPageImages(self: *Document, page_idx: usize, allocator: std.mem.Allocator) ![]PageImage {
+        if (page_idx >= self.pages.items.len) return error.PageNotFound;
+        const arena = self.parsing_arena.allocator();
+        const page = self.pages.items[page_idx];
+
+        var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch_arena.deinit();
+        const scratch = scratch_arena.allocator();
+
+        const content = pagetree.getPageContents(
+            arena,
+            scratch,
+            self.data,
+            &self.xref_table,
+            page,
+            &self.object_cache,
+        ) catch return allocator.alloc(PageImage, 0);
+
+        var scan = ImageScan{
+            .doc = self,
+            .allocator = allocator,
+            .scratch = scratch,
+            .images = .empty,
+        };
+        errdefer scan.deinit();
+        try scan.scan(content, page.resources, .{ 1, 0, 0, 1, 0, 0 }, 0);
+        return scan.images.toOwnedSlice(allocator);
+    }
+
+    const DecodedImage = struct {
+        format: ImageFormat,
+        colorspace: ImageColorSpace,
+        bpc: u8,
+        ccitt_k: i32 = 0,
+        black_is_1: bool = false,
+        data: []u8,
+    };
+
+    const FilterKind = enum { dct, jpx, ccitt, other };
+
+    const ImageScan = struct {
+        doc: *Document,
+        allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+        images: std.ArrayList(PageImage),
+
+        fn deinit(self: *ImageScan) void {
+            for (self.images.items) |img| self.allocator.free(img.data);
+            self.images.deinit(self.allocator);
+        }
+
+        fn resolveObj(self: *ImageScan, obj: Object) ?Object {
+            return switch (obj) {
+                .reference => |ref| pagetree.resolveRef(
+                    self.doc.parsing_arena.allocator(),
+                    self.doc.data,
+                    &self.doc.xref_table,
+                    ref,
+                    &self.doc.object_cache,
+                ) catch null,
+                else => obj,
+            };
+        }
+
+        fn resolveDict(self: *ImageScan, obj: ?Object) ?Object.Dict {
+            const o = obj orelse return null;
+            const resolved = self.resolveObj(o) orelse return null;
+            return switch (resolved) {
+                .dict => |d| d,
+                else => null,
+            };
+        }
+
+        fn filterKind(name: []const u8) FilterKind {
+            if (std.mem.eql(u8, name, "DCTDecode")) return .dct;
+            if (std.mem.eql(u8, name, "JPXDecode")) return .jpx;
+            if (std.mem.eql(u8, name, "CCITTFaxDecode")) return .ccitt;
+            return .other;
+        }
+
+        fn streamFilterKind(self: *ImageScan, stream: Object.Stream) FilterKind {
+            _ = self;
+            const f = stream.dict.get("Filter") orelse return .other;
+            switch (f) {
+                .name => |n| return filterKind(n),
+                .array => |arr| {
+                    for (arr) |item| {
+                        if (item == .name) {
+                            const k = filterKind(item.name);
+                            if (k != .other) return k;
+                        }
+                    }
+                    return .other;
+                },
+                else => return .other,
+            }
+        }
+
+        fn scan(self: *ImageScan, content: []const u8, resources: ?Object.Dict, ctm: [6]f64, depth: u8) anyerror!void {
+            var cur = ctm;
+            var stack: [16][6]f64 = undefined;
+            var sp: usize = 0;
+            var lexer = interpreter.ContentLexer.init(self.scratch, content);
+            var operands: [64]interpreter.Operand = undefined;
+            var n: usize = 0;
+
+            while (try lexer.next()) |token| {
+                if (pushOperand(&operands, &n, token)) continue;
+                const op = token.operator;
+                if (op.len > 0) {
+                    if (op.len == 1 and op[0] == 'q') {
+                        if (sp < stack.len) {
+                            stack[sp] = cur;
+                            sp += 1;
+                        }
+                    } else if (op.len == 1 and op[0] == 'Q') {
+                        if (sp > 0) {
+                            sp -= 1;
+                            cur = stack[sp];
+                        }
+                    } else if (std.mem.eql(u8, op, "cm") and n >= 6) {
+                        cur = mulMatrix(.{
+                            operands[0].number, operands[1].number,
+                            operands[2].number, operands[3].number,
+                            operands[4].number, operands[5].number,
+                        }, cur);
+                    } else if (std.mem.eql(u8, op, "Do") and n >= 1 and operands[0] == .name) {
+                        try self.doXObject(operands[0].name, resources, cur, depth);
+                    }
+                }
+                n = 0;
+            }
+        }
+
+        fn doXObject(self: *ImageScan, name: []const u8, resources: ?Object.Dict, ctm: [6]f64, depth: u8) anyerror!void {
+            const res = resources orelse return;
+            const xobj_dict = self.resolveDict(res.get("XObject")) orelse return;
+            const xobj = xobj_dict.get(name) orelse return;
+            const resolved = self.resolveObj(xobj) orelse return;
+            const stream = switch (resolved) {
+                .stream => |s| s,
+                else => return,
+            };
+            const subtype = stream.dict.getName("Subtype") orelse return;
+            if (std.mem.eql(u8, subtype, "Form")) {
+                if (depth >= 10) return;
+                const form_res = self.resolveDict(stream.dict.get("Resources")) orelse resources;
+                const body = decompress.decompressStream(
+                    self.scratch,
+                    stream.data,
+                    stream.dict.get("Filter"),
+                    stream.dict.get("DecodeParms"),
+                ) catch return;
+                try self.scan(body, form_res, ctm, depth + 1);
+            } else if (std.mem.eql(u8, subtype, "Image")) {
+                try self.addImage(stream, ctm);
+            }
+        }
+
+        fn addImage(self: *ImageScan, stream: Object.Stream, ctm: [6]f64) !void {
+            if (self.images.items.len >= max_page_images) return;
+            if (stream.dict.get("ImageMask")) |m| {
+                if (m == .boolean and m.boolean) return;
+            }
+            const width_value = stream.dict.getInt("Width") orelse return;
+            const height_value = stream.dict.getInt("Height") orelse return;
+            if (width_value <= 0 or height_value <= 0) return;
+            const w: u32 = @intCast(width_value);
+            const h: u32 = @intCast(height_value);
+            if (w < min_image_side or h < min_image_side) return;
+            if (@as(u64, w) * @as(u64, h) > max_image_pixels) return;
+
+            const decoded = (try self.decode(stream, w, h)) orelse return;
+            if (decoded.data.len > max_image_bytes) {
+                self.allocator.free(decoded.data);
+                return;
+            }
+
+            const x0 = @min(ctm[4], ctm[4] + ctm[0]);
+            const x1 = @max(ctm[4], ctm[4] + ctm[0]);
+            const y0 = @min(ctm[5], ctm[5] + ctm[3]);
+            const y1 = @max(ctm[5], ctm[5] + ctm[3]);
+
+            try self.images.append(self.allocator, .{
+                .rect = .{ x0, y0, x1, y1 },
+                .width = w,
+                .height = h,
+                .format = decoded.format,
+                .bpc = decoded.bpc,
+                .colorspace = decoded.colorspace,
+                .ccitt_k = decoded.ccitt_k,
+                .black_is_1 = decoded.black_is_1,
+                .data = decoded.data,
+            });
+        }
+
+        fn decode(self: *ImageScan, stream: Object.Stream, w: u32, h: u32) !?DecodedImage {
+            const kind = self.streamFilterKind(stream);
+            var bpc_value = stream.dict.getInt("BitsPerComponent") orelse 8;
+            if (bpc_value <= 0 or bpc_value > 8) bpc_value = 8;
+            const bpc: u8 = @intCast(bpc_value);
+
+            var cs: ImageColorSpace = .rgb;
+            var palette: ?[]const u8 = null;
+            var palette_base: ImageColorSpace = .rgb;
+            var palette_size: usize = 0;
+            if (stream.dict.get("ColorSpace")) |cs_obj| {
+                if (self.resolveObj(cs_obj)) |obj| {
+                    switch (obj) {
+                        .name => |n| {
+                            if (std.mem.eql(u8, n, "DeviceGray") or std.mem.eql(u8, n, "G")) {
+                                cs = .gray;
+                            } else if (std.mem.eql(u8, n, "DeviceCMYK")) {
+                                cs = .cmyk;
+                            } else {
+                                cs = .rgb;
+                            }
+                        },
+                        .array => |arr| {
+                            if (arr.len >= 2 and arr[0] == .name and std.mem.eql(u8, arr[0].name, "Indexed")) {
+                                cs = .indexed;
+                                if (arr[1] == .name and std.mem.eql(u8, arr[1].name, "DeviceGray")) {
+                                    palette_base = .gray;
+                                }
+                                if (arr.len >= 3 and arr[2] == .integer and arr[2].integer >= 0) {
+                                    palette_size = @intCast(arr[2].integer + 1);
+                                }
+                                if (arr.len >= 4) {
+                                    switch (arr[3]) {
+                                        .string => |v| palette = v,
+                                        .hex_string => |v| palette = v,
+                                        else => {},
+                                    }
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
+
+            switch (kind) {
+                .dct => return .{
+                    .format = .jpeg,
+                    .colorspace = cs,
+                    .bpc = 8,
+                    .data = try self.allocator.dupe(u8, stream.data),
+                },
+                .jpx => return .{
+                    .format = .jpx,
+                    .colorspace = cs,
+                    .bpc = bpc,
+                    .data = try self.allocator.dupe(u8, stream.data),
+                },
+                .ccitt => {
+                    var k: i32 = 0;
+                    var black = false;
+                    if (self.resolveDict(stream.dict.get("DecodeParms"))) |params| {
+                        if (params.getInt("K")) |kv| k = @intCast(kv);
+                        if (params.get("BlackIs1")) |b| {
+                            if (b == .boolean) black = b.boolean;
+                        }
+                    }
+                    return .{
+                        .format = .ccitt,
+                        .colorspace = .gray,
+                        .bpc = 1,
+                        .ccitt_k = k,
+                        .black_is_1 = black,
+                        .data = try self.allocator.dupe(u8, stream.data),
+                    };
+                },
+                .other => {},
+            }
+
+            const raw = decompress.decompressStream(
+                self.scratch,
+                stream.data,
+                stream.dict.get("Filter"),
+                stream.dict.get("DecodeParms"),
+            ) catch return null;
+
+            var invert = false;
+            if (stream.dict.getArray("Decode")) |dec| {
+                if (dec.len >= 2 and dec[0] == .real and dec[0].real >= 0.5) invert = true;
+                if (dec.len >= 2 and dec[0] == .integer and dec[0].integer >= 1) invert = true;
+            }
+
+            const pixels: usize = @as(usize, w) * @as(usize, h);
+            if (cs == .indexed) {
+                if (bpc != 8 or palette == null) return null;
+                if (raw.len < pixels) return null;
+                const comps: usize = if (palette_base == .gray) 1 else 3;
+                const pal = palette.?;
+                const pal_entries = if (palette_size > 0) palette_size else pal.len / comps;
+                const out = try self.allocator.alloc(u8, pixels * comps);
+                errdefer self.allocator.free(out);
+                for (0..pixels) |i| {
+                    const idx: usize = raw[i];
+                    if (idx >= pal_entries) {
+                        @memset(out[i * comps ..][0..comps], 0);
+                        continue;
+                    }
+                    for (0..comps) |c| out[i * comps + c] = pal[idx * comps + c];
+                }
+                return .{
+                    .format = if (comps == 1) .gray8 else .rgb24,
+                    .colorspace = palette_base,
+                    .bpc = 8,
+                    .data = out,
+                };
+            }
+
+            if (bpc == 8) {
+                if (cs == .gray) {
+                    if (raw.len < pixels) return null;
+                    const out = try self.allocator.dupe(u8, raw[0..pixels]);
+                    if (invert) {
+                        for (out) |*v| v.* = 255 - v.*;
+                    }
+                    return .{ .format = .gray8, .colorspace = .gray, .bpc = 8, .data = out };
+                }
+                if (cs == .rgb) {
+                    const need = pixels * 3;
+                    if (raw.len < need) return null;
+                    const out = try self.allocator.dupe(u8, raw[0..need]);
+                    if (invert) {
+                        for (out) |*v| v.* = 255 - v.*;
+                    }
+                    return .{ .format = .rgb24, .colorspace = .rgb, .bpc = 8, .data = out };
+                }
+                if (cs == .cmyk) {
+                    if (raw.len < pixels * 4) return null;
+                    const out = try self.allocator.alloc(u8, pixels * 3);
+                    errdefer self.allocator.free(out);
+                    for (0..pixels) |i| {
+                        const c: u32 = raw[i * 4];
+                        const m: u32 = raw[i * 4 + 1];
+                        const y: u32 = raw[i * 4 + 2];
+                        const k: u32 = raw[i * 4 + 3];
+                        out[i * 3] = @intCast(((255 - c) * (255 - k)) / 255);
+                        out[i * 3 + 1] = @intCast(((255 - m) * (255 - k)) / 255);
+                        out[i * 3 + 2] = @intCast(((255 - y) * (255 - k)) / 255);
+                    }
+                    return .{ .format = .rgb24, .colorspace = .rgb, .bpc = 8, .data = out };
+                }
+            }
+
+            if (bpc == 1 and cs == .gray) {
+                const row_bytes = (@as(usize, w) + 7) / 8;
+                if (raw.len < row_bytes * h) return null;
+                const out = try self.allocator.alloc(u8, pixels);
+                errdefer self.allocator.free(out);
+                for (0..h) |y| {
+                    for (0..w) |x| {
+                        const byte = raw[y * row_bytes + x / 8];
+                        const bit: u3 = @intCast(7 - (x % 8));
+                        var v: u8 = (byte >> bit) & 1;
+                        if (invert) v = 1 - v;
+                        out[y * @as(usize, w) + x] = if (v == 1) 0 else 255;
+                    }
+                }
+                return .{ .format = .gray8, .colorspace = .gray, .bpc = 8, .data = out };
+            }
+
+            return null;
+        }
+    };
+
     pub fn freeImages(allocator: std.mem.Allocator, images: []ImageInfo) void {
         allocator.free(images);
     }

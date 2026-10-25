@@ -158,6 +158,31 @@ zpdf_close(doc);
 A Go binding lives at [Servicewall/zpdf-go](https://github.com/Servicewall/zpdf-go)
 (static libraries and cgo hidden behind a normal Go API).
 
+## Accuracy tests (CJK)
+
+End-to-end tests cover the encodings Chinese PDFs actually use:
+
+- Type0 `/Identity-H` + ToUnicode CMap, with a sentence mixing Chinese,
+  fullwidth punctuation and digits (`中文编码测试：2026，ABC！`)
+- Type0 `/UniGB-UCS2-H` without ToUnicode (code == Unicode)
+- supplementary plane characters (U+20000) through ToUnicode surrogate pairs
+- Kangxi radicals / CJK compatibility ideographs mapped to unified codepoints,
+  fullwidth alphanumerics folded, zero-width characters dropped
+- xref recovery, Form XObject fonts and `cm`-positioned line breaks
+
+For real documents, create `testdata/cjk_regression.tsv` with one
+`pdf<TAB>reference.txt` per line (reference text from human transcription,
+`pdftotext -raw`, or another trusted extractor) and run `zig build test`.
+Both sides are normalised (whitespace, zero-width, Kangxi/fullwidth) and
+compared as character 4-gram recall/F1; the gate fails if any document has
+recall < 0.95 or the mean is < 0.98. The test skips when the file is absent.
+
+On a local 37-document Chinese corpus (reference: `pdftotext -raw`):
+
+```
+mean recall = 0.9992   mean F1 = 0.9947   failures = 0
+```
+
 ## Tests and gates
 
 ```bash

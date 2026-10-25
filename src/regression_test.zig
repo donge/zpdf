@@ -4,48 +4,9 @@
 //! xref recovery, Form XObject fonts, Unicode mapping and CTM-based lines.
 
 const std = @import("std");
-const compat = @import("compat.zig");
 const zpdf = @import("root.zig");
 const testpdf = @import("testpdf.zig");
-
-fn buildPdf(allocator: std.mem.Allocator, objs: []const []const u8) ![]u8 {
-    var pdf: std.ArrayList(u8) = .empty;
-    errdefer pdf.deinit(allocator);
-    var w = compat.arrayListWriter(&pdf, allocator);
-
-    try w.writeAll("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
-    const offsets = try allocator.alloc(usize, objs.len);
-    defer allocator.free(offsets);
-
-    for (objs, 0..) |body, i| {
-        offsets[i] = pdf.items.len;
-        try w.print("{d} 0 obj\n", .{i + 1});
-        try w.writeAll(body);
-        try w.writeAll("\nendobj\n");
-    }
-
-    const xref_offset = pdf.items.len;
-    try w.writeAll("xref\n");
-    try w.print("0 {d}\n", .{objs.len + 1});
-    try w.writeAll("0000000000 65535 f \n");
-    for (offsets) |off| {
-        try w.print("{d:0>10} 00000 n \n", .{off});
-    }
-    try w.writeAll("trailer\n");
-    try w.print("<< /Size {d} /Root 1 0 R >>\n", .{objs.len + 1});
-    try w.print("startxref\n{d}\n%%EOF\n", .{xref_offset});
-
-    return pdf.toOwnedSlice(allocator);
-}
-
-fn extractOne(allocator: std.mem.Allocator, pdf: []const u8) ![]u8 {
-    const doc = try zpdf.Document.openFromMemory(allocator, pdf, zpdf.ErrorConfig.default());
-    defer doc.close();
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    try doc.extractText(0, compat.arrayListWriter(&out, allocator));
-    return out.toOwnedSlice(allocator);
-}
+const testutil = @import("testutil.zig");
 
 test "xref: CRLF before xref keyword and generation 65536" {
     const allocator = std.testing.allocator;
@@ -78,7 +39,7 @@ test "xref: CRLF before xref keyword and generation 65536" {
     const entry = std.mem.indexOf(u8, broken.items, " 65535 f").?;
     @memcpy(broken.items[entry + 1 .. entry + 6], "65536");
 
-    const text = try extractOne(allocator, broken.items);
+    const text = try testutil.extractOne(allocator, broken.items);
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "XrefFix") != null);
 }
@@ -104,9 +65,9 @@ test "Form XObject: follow Do and load fonts from the form resources" {
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     };
 
-    const pdf = try buildPdf(allocator, &objs);
+    const pdf = try testutil.buildPdf(allocator, &objs);
     defer allocator.free(pdf);
-    const text = try extractOne(allocator, pdf);
+    const text = try testutil.extractOne(allocator, pdf);
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "FormOnly") != null);
 }
@@ -145,9 +106,9 @@ test "unicode: Kangxi radicals are mapped to unified ideographs" {
         cmap_obj,
     };
 
-    const pdf = try buildPdf(allocator, &objs);
+    const pdf = try testutil.buildPdf(allocator, &objs);
     defer allocator.free(pdf);
-    const text = try extractOne(allocator, pdf);
+    const text = try testutil.extractOne(allocator, pdf);
     defer allocator.free(text);
     // U+2F63 (Kangxi radical) -> U+751F (生), not the radical itself.
     try std.testing.expect(std.mem.indexOf(u8, text, "\u{751F}") != null);
@@ -175,9 +136,9 @@ test "layout: cm-positioned text produces separate lines" {
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     };
 
-    const pdf = try buildPdf(allocator, &objs);
+    const pdf = try testutil.buildPdf(allocator, &objs);
     defer allocator.free(pdf);
-    const text = try extractOne(allocator, pdf);
+    const text = try testutil.extractOne(allocator, pdf);
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "LineOne\nLineTwo") != null);
 }
@@ -238,9 +199,9 @@ test "Form XObject: same font name in two forms does not collide" {
         cmap_obj,
     };
 
-    const pdf = try buildPdf(allocator, &objs);
+    const pdf = try testutil.buildPdf(allocator, &objs);
     defer allocator.free(pdf);
-    const text = try extractOne(allocator, pdf);
+    const text = try testutil.extractOne(allocator, pdf);
     defer allocator.free(text);
     // Form 1 keeps the plain WinAnsi mapping, form 2 maps A -> B.
     try std.testing.expect(std.mem.indexOf(u8, text, "AAAA") != null);

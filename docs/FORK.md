@@ -133,6 +133,11 @@ a text-extraction one.
   XObject font, identical `/F1` names in two forms with different fonts,
   ToUnicode → Kangxi radical mapping, `cm`-positioned lines, and the Unicode
   table invariants.
+* `src/cjk_test.zig` — end-to-end CJK encodings (Identity-H + ToUnicode,
+  UniGB-UCS2-H without ToUnicode, supplementary plane, Kangxi/fullwidth/
+  zero-width), plus an optional real-document accuracy gate driven by
+  `testdata/cjk_regression.tsv` (4-gram recall/F1; 37 local Chinese docs:
+  mean recall 0.9992, mean F1 0.9947).
 * `src/bench_gate.zig` — a 200-page fixture that must extract at more than
   **100 pages/s** (real hardware does >10k) and must contain the first and last
   page text. It fails the build on accidental O(n²) work or per-page reloads.

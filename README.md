@@ -158,6 +158,31 @@ zpdf_close(doc);
 A Go binding lives at [Servicewall/zpdf-go](https://github.com/Servicewall/zpdf-go)
 (static libraries and cgo hidden behind a normal Go API).
 
+## Page images for OCR (opt-in)
+
+Callers that need to OCR scanned pages can pull the page images; the text path
+is unchanged and pays nothing unless this is called.
+
+```c
+ZpdfPageImage *imgs; size_t n;
+if (zpdf_extract_page_images(doc, 0, &imgs, &n) == 0) {
+    /* imgs[i].format: RGB24 / GRAY8 / JPEG / CCITT / JPX */
+    zpdf_free_page_images(imgs, n);
+}
+```
+
+- JPEG (`DCTDecode`) is returned as-is — no re-encode, no render.
+- Flate/LZW/RunLength samples are converted to RGB24 or GRAY8
+  (gray/rgb/cmyk/indexed, bpc 1 and 8; PNG predictors supported).
+- CCITT is returned raw with `K` / `BlackIs1` for a fax decoder.
+- JPX is returned raw; zpdf does not ship a JPEG2000 decoder.
+- Limits: max 8 images/page, min 64 px, max 40 MP; `/ImageMask` and `/SMask`
+  are skipped.
+
+Go: `doc.PageImages(page)` in `zpdf-go` v0.2.0+.
+
+See [docs/image-extraction.md](docs/image-extraction.md) for the full design.
+
 ## Accuracy tests (CJK)
 
 End-to-end tests cover the encodings Chinese PDFs actually use:

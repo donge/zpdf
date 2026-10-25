@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .pic = true,
             .link_libc = true,
+            .strip = true,
         }),
     });
     const install_capi = b.addInstallArtifact(capi_lib, .{});

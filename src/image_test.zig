@@ -4,6 +4,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const zpdf = @import("root.zig");
 const testutil = @import("testutil.zig");
+const testpdf = @import("testpdf.zig");
 
 fn streamObj(allocator: std.mem.Allocator, dict: []const u8, data: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -174,4 +175,59 @@ test "images: nested form with indirect resources" {
     try std.testing.expectEqual(@as(usize, 1), imgs.len);
     try std.testing.expectEqual(zpdf.Document.ImageFormat.rgb24, imgs[0].format);
     try std.testing.expectEqual(@as(usize, 100 * 100 * 3), imgs[0].data.len);
+}
+
+test "images: indirect DecodeParms predictor is applied" {
+    const allocator = std.testing.allocator;
+    // 64x64 DeviceRGB, solid (10,20,30), PNG Sub predictor (filter 1), zlib.
+    const compressed = [_]u8{
+        120, 218, 237, 207, 33, 13,  0,  0,  8,   0,   48, 176, 104, 52, 253, 99,
+        18,  1,   205, 246, 55, 120, 86, 79, 124, 150, 2,  2,   2,   2,  2,   2,
+        2,   2,   2,   2,   2,  2,   2,  2,  2,   2,   2,  2,   2,   2,  2,   2,
+        2,   2,   2,   2,   2,  2,   2,  2,  2,   2,   2,  2,   2,   2,  2,   2,
+        2,   2,   2,   2,   2,  2,   2,  2,  2,   2,   2,  2,   2,   2,  151, 5,
+        202, 187, 15,  65,
+    };
+    const image = try streamObj(
+        allocator,
+        "/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB " ++
+            "/BitsPerComponent 8 /Filter /FlateDecode /DecodeParms 6 0 R",
+        &compressed,
+    );
+    defer allocator.free(image);
+    const content = "q 100 0 0 100 10 10 cm /Im1 Do Q";
+    const content_obj = try streamObj(allocator, "", content);
+    defer allocator.free(content_obj);
+
+    const objs = [_][]const u8{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R " ++
+            "/Resources << /XObject << /Im1 5 0 R >> >> >>",
+        content_obj,
+        image,
+        "<< /Predictor 15 /Columns 64 /Colors 3 /BitsPerComponent 8 >>",
+    };
+    const pdf = try testutil.buildPdf(allocator, &objs);
+    defer allocator.free(pdf);
+
+    const doc = try zpdf.Document.openFromMemory(allocator, pdf, zpdf.ErrorConfig.default());
+    defer doc.close();
+    const imgs = try doc.extractPageImages(0, allocator);
+    defer zpdf.Document.freePageImages(allocator, imgs);
+    try std.testing.expectEqual(@as(usize, 1), imgs.len);
+    try std.testing.expectEqual(zpdf.Document.ImageFormat.rgb24, imgs[0].format);
+    try std.testing.expectEqual(@as(usize, 64 * 64 * 3), imgs[0].data.len);
+    try std.testing.expectEqual(@as(u8, 10), imgs[0].data[0]);
+    try std.testing.expectEqual(@as(u8, 20), imgs[0].data[1]);
+    try std.testing.expectEqual(@as(u8, 30), imgs[0].data[2]);
+}
+
+test "images: openFromMemoryCopied frees its aligned copy" {
+    const allocator = std.testing.allocator;
+    const pdf = try testpdf.generateMinimalPdf(allocator, "aligned");
+    defer allocator.free(pdf);
+    const doc = try zpdf.Document.openFromMemoryCopied(allocator, pdf, zpdf.ErrorConfig.default());
+    try std.testing.expectEqual(@as(usize, 1), doc.pageCount());
+    doc.close();
 }

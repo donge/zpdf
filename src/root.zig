@@ -253,10 +253,14 @@ pub const Document = struct {
     /// Open from a copy owned by the document (freed by close()).
     /// Used by the C API so callers can release their buffer immediately.
     pub fn openFromMemoryCopied(allocator: std.mem.Allocator, data: []const u8, config: ErrorConfig) !*Document {
-        const copy = try allocator.dupe(u8, data);
-        const aligned: []align(std.heap.page_size_min) u8 = @alignCast(copy);
-        // On failure openFromMemoryOwnedAlloc frees `aligned` itself.
-        return openFromMemoryOwnedAlloc(allocator, aligned, config);
+        const copy = try allocator.alignedAlloc(
+            u8,
+            std.mem.Alignment.fromByteUnits(std.heap.page_size_min),
+            data.len,
+        );
+        @memcpy(copy, data);
+        // On failure openFromMemoryOwnedAlloc frees `copy` itself.
+        return openFromMemoryOwnedAlloc(allocator, copy, config);
     }
 
     fn parseDocument(self: *Document) !void {
@@ -1743,6 +1747,11 @@ pub const Document = struct {
             };
         }
 
+        fn resolveOpt(self: *ImageScan, obj: ?Object) ?Object {
+            const o = obj orelse return null;
+            return self.resolveObj(o);
+        }
+
         fn resolveDict(self: *ImageScan, obj: ?Object) ?Object.Dict {
             const o = obj orelse return null;
             const resolved = self.resolveObj(o) orelse return null;
@@ -1829,8 +1838,8 @@ pub const Document = struct {
                 const body = decompress.decompressStream(
                     self.scratch,
                     stream.data,
-                    stream.dict.get("Filter"),
-                    stream.dict.get("DecodeParms"),
+                    self.resolveOpt(stream.dict.get("Filter")),
+                    self.resolveOpt(stream.dict.get("DecodeParms")),
                 ) catch return;
                 try self.scan(body, form_res, ctm, depth + 1);
             } else if (std.mem.eql(u8, subtype, "Image")) {
@@ -1954,11 +1963,12 @@ pub const Document = struct {
                 .other => {},
             }
 
+            const dp = self.resolveOpt(stream.dict.get("DecodeParms"));
             const raw = decompress.decompressStream(
                 self.scratch,
                 stream.data,
-                stream.dict.get("Filter"),
-                stream.dict.get("DecodeParms"),
+                self.resolveOpt(stream.dict.get("Filter")),
+                dp,
             ) catch return null;
 
             var invert = false;

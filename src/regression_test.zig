@@ -207,3 +207,32 @@ test "Form XObject: same font name in two forms does not collide" {
     try std.testing.expect(std.mem.indexOf(u8, text, "AAAA") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "BBBB") != null);
 }
+
+test "Form XObject: indirect /Resources reference is resolved" {
+    const allocator = std.testing.allocator;
+    const form_content = "BT /F1 12 Tf 72 700 Td (IndirectRes) Tj ET";
+    const form = try std.fmt.allocPrint(
+        allocator,
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] " ++
+            "/Resources 6 0 R /Length {d} >>\nstream\n{s}\nendstream",
+        .{ form_content.len, form_content },
+    );
+    defer allocator.free(form);
+
+    const objs = [_][]const u8{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R " ++
+            "/Resources << /XObject << /Fm1 5 0 R >> >> >>",
+        "<< /Length 7 >>\nstream\n/Fm1 Do\nendstream",
+        form,
+        "<< /Font << /F1 7 0 R >> >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    };
+
+    const pdf = try testutil.buildPdf(allocator, &objs);
+    defer allocator.free(pdf);
+    const text = try testutil.extractOne(allocator, pdf);
+    defer allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "IndirectRes") != null);
+}

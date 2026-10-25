@@ -2368,6 +2368,28 @@ fn loadFontsForResources(
     }
 }
 
+/// Resolve a /Resources value that may be an indirect reference.
+fn resolveResourceDict(ctx: *const ExtractionContext, obj: ?Object) ?Object.Dict {
+    const o = obj orelse return null;
+    return switch (o) {
+        .dict => |d| d,
+        .reference => |ref| blk: {
+            const resolved = pagetree.resolveRef(
+                ctx.parse_allocator,
+                ctx.data,
+                ctx.xref_table,
+                ref,
+                @constCast(ctx.object_cache),
+            ) catch break :blk null;
+            break :blk switch (resolved) {
+                .dict => |d| d,
+                else => null,
+            };
+        },
+        else => null,
+    };
+}
+
 fn handleDoOperator(
     xobject_name: []const u8,
     resources: ?Object.Dict,
@@ -2422,8 +2444,9 @@ fn handleDoOperator(
     const form_content = decompress.decompressStream(ctx.scratch_allocator, xobj_resolved.data, filter, params) catch return;
     defer ctx.scratch_allocator.free(form_content);
 
-    // Get Form XObject's own resources (may inherit from parent)
-    const form_resources = xobj_resolved.dict.getDict("Resources") orelse resources;
+    // Get Form XObject's own resources (may inherit from parent). The value
+    // is often an indirect reference; getDict() only handles inline dicts.
+    const form_resources = resolveResourceDict(ctx, xobj_resolved.dict.get("Resources")) orelse resources;
 
     // Recursively extract text with increased depth
     const child_ctx = ExtractionContext{

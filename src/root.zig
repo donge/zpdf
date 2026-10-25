@@ -723,9 +723,11 @@ pub const Document = struct {
                 try result.ensureTotalCapacity(allocator, mcids.items.len * 50);
 
                 for (mcids.items) |mcr| {
-                    if (extractor.getTextForMcid(mcr.mcid)) |text| {
-                        if (result.items.len > 0 and text.len > 0) {
-                            try result.append(allocator, ' ');
+                    if (extractor.getTextForMcid(mcr.mcid)) |raw| {
+                        const text = std.mem.trim(u8, raw, " \t\r\n");
+                        if (text.len == 0) continue;
+                        if (result.items.len > 0 and result.items[result.items.len - 1] != '\n') {
+                            try result.append(allocator, '\n');
                         }
                         try result.appendSlice(allocator, text);
                     }
@@ -1936,12 +1938,50 @@ const ExtractionMode = union(enum) {
     stream: struct {
         resources: ?Object.Dict,
         ctx: ?*const ExtractionContext,
+        /// CTM inherited from the parent content stream (Form XObjects).
+        ctm: [6]f64 = .{ 1, 0, 0, 1, 0, 0 },
     },
     /// Collect spans with bounding boxes
     bounds: *interpreter.SpanCollector,
     /// Track marked content IDs for structure tree reading order
     structured: *structtree.MarkedContentExtractor,
 };
+
+/// Matrix concatenation: result = a x b (PDF row-vector convention).
+fn mulMatrix(a: [6]f64, b: [6]f64) [6]f64 {
+    return .{
+        a[0] * b[0] + a[1] * b[2],
+        a[0] * b[1] + a[1] * b[3],
+        a[2] * b[0] + a[3] * b[2],
+        a[2] * b[1] + a[3] * b[3],
+        a[4] * b[0] + a[5] * b[2] + b[4],
+        a[4] * b[1] + a[5] * b[3] + b[5],
+    };
+}
+
+/// Emit a newline when the text origin moved to another visual line.
+/// Positions are transformed through the CTM so that graphics placed with
+/// `cm` (instead of `Td`) still produce line breaks.
+fn breakLineIfMoved(
+    tm: *const [6]f64,
+    ctm: [6]f64,
+    font_size: f64,
+    wmode: u8,
+    prev_x: *f64,
+    prev_y: *f64,
+    have_prev: *bool,
+    writer: anytype,
+) !void {
+    const dev_x = tm[4] * ctm[0] + tm[5] * ctm[2] + ctm[4];
+    const dev_y = tm[4] * ctm[1] + tm[5] * ctm[3] + ctm[5];
+    const scale = @max(std.math.hypot(ctm[2], ctm[3]), 0.01);
+    const threshold = font_size * 0.7 * scale;
+    const moved = if (wmode == 1) @abs(dev_x - prev_x.*) > threshold else @abs(dev_y - prev_y.*) > threshold;
+    if (have_prev.* and moved) try writer.writeByte('\n');
+    prev_x.* = dev_x;
+    prev_y.* = dev_y;
+    have_prev.* = true;
+}
 
 /// Try to buffer a token as an operand. Returns true if consumed (not an operator).
 fn pushOperand(operands: []interpreter.Operand, count: *usize, token: interpreter.ContentLexer.Token) bool {
@@ -2019,11 +2059,22 @@ fn extractContentStream(
     var operand_count: usize = 0;
 
     var current_font: ?*const encoding.FontEncoding = null;
-    var prev_x: f64 = 0;
-    var prev_y: f64 = 0;
     var current_x: f64 = 0;
     var current_y: f64 = 0;
     var font_size: f64 = 12;
+    // Device-space tracking for line breaks. The text matrix alone is not
+    // enough: graphics placed with cm (Keynote/pdfcpu exports) would otherwise
+    // never produce a newline.
+    var ctm: [6]f64 = switch (mode) {
+        .stream => |s| s.ctm,
+        else => .{ 1, 0, 0, 1, 0, 0 },
+    };
+    var ctm_stack: [64][6]f64 = undefined;
+    var ctm_depth: usize = 0;
+    var tm: [6]f64 = .{ 1, 0, 0, 1, 0, 0 };
+    var prev_dev_x: f64 = 0;
+    var prev_dev_y: f64 = 0;
+    var have_dev_pos = false;
     // Track the font size of the last shown text for newline threshold.
     // Superscripts/subscripts switch to a smaller Tf *before* their Tm, so
     // using raw font_size would make the threshold too small and produce
@@ -2044,6 +2095,25 @@ fn extractContentStream(
         // token is an operator
         const op = token.operator;
         if (op.len > 0) switch (op[0]) {
+            'q' => if (op.len == 1) {
+                if (ctm_depth < ctm_stack.len) {
+                    ctm_stack[ctm_depth] = ctm;
+                    ctm_depth += 1;
+                }
+            },
+            'Q' => if (op.len == 1) {
+                if (ctm_depth > 0) {
+                    ctm_depth -= 1;
+                    ctm = ctm_stack[ctm_depth];
+                }
+            },
+            'c' => if (std.mem.eql(u8, op, "cm") and operand_count >= 6) {
+                ctm = mulMatrix(.{
+                    operands[0].number, operands[1].number,
+                    operands[2].number, operands[3].number,
+                    operands[4].number, operands[5].number,
+                }, ctm);
+            },
             'B' => switch (mode) {
                 .stream => if (op.len == 2 and op[1] == 'T') {},
                 .bounds => {},
@@ -2074,7 +2144,7 @@ fn extractContentStream(
             'D' => switch (mode) {
                 .stream => |s| if (op.len == 2 and op[1] == 'o') {
                     if (operand_count >= 1 and operands[0] == .name) {
-                        try handleDoOperator(operands[0].name, s.resources, s.ctx, writer);
+                        try handleDoOperator(operands[0].name, s.resources, s.ctx, ctm, writer);
                     }
                 },
                 .bounds, .structured => {},
@@ -2092,16 +2162,19 @@ fn extractContentStream(
                 'd', 'D' => if (operand_count >= 2) {
                     switch (mode) {
                         .stream => {
+                            tm[4] += operands[0].number;
+                            tm[5] += operands[1].number;
                             const wmode = if (current_font) |f| f.wmode else 0;
-                            const displacement = if (wmode == 1) operands[0].number else operands[1].number;
-                            // Use max(font_size, last_text_font_size) so that a small
-                            // superscript font doesn't shrink the line-break threshold
-                            // below the displacement used for super/subscript positioning.
-                            const ref_size = @max(font_size, last_text_font_size);
-                            if (@abs(displacement) > ref_size * 0.7 and prev_y != 0) {
-                                try writer.writeByte('\n');
-                            }
-                            prev_y = operands[1].number;
+                            try breakLineIfMoved(
+                                &tm,
+                                ctm,
+                                @max(font_size, last_text_font_size),
+                                wmode,
+                                &prev_dev_x,
+                                &prev_dev_y,
+                                &have_dev_pos,
+                                writer,
+                            );
                         },
                         .bounds => |collector| {
                             current_x += operands[0].number;
@@ -2115,15 +2188,22 @@ fn extractContentStream(
                 'm' => if (operand_count >= 6) {
                     switch (mode) {
                         .stream => {
+                            tm = .{
+                                operands[0].number, operands[1].number,
+                                operands[2].number, operands[3].number,
+                                operands[4].number, operands[5].number,
+                            };
                             const wmode = if (current_font) |f| f.wmode else 0;
-                            const new_pos = if (wmode == 1) operands[4].number else operands[5].number;
-                            const prev_pos = if (wmode == 1) prev_x else prev_y;
-                            const ref_size = @max(font_size, last_text_font_size);
-                            if (@abs(new_pos - prev_pos) > ref_size * 0.7 and prev_pos != 0) {
-                                try writer.writeByte('\n');
-                            }
-                            prev_x = operands[4].number;
-                            prev_y = operands[5].number;
+                            try breakLineIfMoved(
+                                &tm,
+                                ctm,
+                                @max(font_size, last_text_font_size),
+                                wmode,
+                                &prev_dev_x,
+                                &prev_dev_y,
+                                &have_dev_pos,
+                                writer,
+                            );
                         },
                         .bounds => |collector| {
                             current_x = operands[4].number;
@@ -2283,6 +2363,7 @@ fn handleDoOperator(
     xobject_name: []const u8,
     resources: ?Object.Dict,
     maybe_ctx: ?*const ExtractionContext,
+    parent_ctm: [6]f64,
     writer: anytype,
 ) anyerror!void {
     // No context means XObject resolution is unavailable; skip silently
@@ -2355,6 +2436,7 @@ fn handleDoOperator(
     extractContentStream(form_content, .{ .stream = .{
         .resources = form_resources,
         .ctx = &child_ctx,
+        .ctm = parent_ctm,
     } }, &form_fonts, ctx.page_num, ctx.scratch_allocator, writer) catch |err| {
         if (err == error.OutOfMemory) return err;
         // Domain errors (corrupt/unsupported stream): skip silently

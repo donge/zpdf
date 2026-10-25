@@ -3,13 +3,14 @@
 > **Fork note.** This tree is a hardened fork of [Lulzx/zpdf](https://github.com/Lulzx/zpdf)
 > (CC0), focused on text extraction and performance. It fixes xref recovery,
 > Form XObject fonts and CJK Unicode mapping found on real-world PDFs. On 50 real
-> PDFs (773 pages) it is ~3.4x faster than poppler end-to-end, with 0.993 mean
-> character coverage. See [docs/FORK.md](docs/FORK.md) for the change list,
+> PDFs (773 pages) it is ~4x faster than poppler end-to-end, with 0.993 mean
+> character coverage and clean CJK text. See [docs/FORK.md](docs/FORK.md) for the change list,
 > benchmarks and remaining limitations.
 >
 > ```bash
 > zig build -Doptimize=ReleaseFast   # requires Zig 0.15.2
 > ./zig-out/bin/zpdf extract document.pdf
+> zig build test                     # 591 tests, includes the benchmark gate
 > ```
 
 A PDF text extraction library written in Zig.

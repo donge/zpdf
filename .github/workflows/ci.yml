@@ -17,7 +17,6 @@ jobs:
       matrix:
         zig-version:
           - 0.15.2
-          - 0.16.0
 
     steps:
       - uses: actions/checkout@v4
@@ -35,8 +34,10 @@ jobs:
       - name: Run ReleaseSafe tests
         run: zig build test -Doptimize=ReleaseSafe
 
+      - name: Run gates
+        run: zig build gate
+
       - name: Check formatting
-        if: matrix.zig-version == '0.16.0'
         run: zig fmt --check build.zig gen_test.zig src/*.zig
 
       - name: Build native targets

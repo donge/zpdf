@@ -81,8 +81,8 @@ include process start (CLI); poppler was measured in-process through docconv
 
 | | upstream zpdf | this fork | poppler (docconv) |
 |---|---:|---:|---:|
-| total wall time | 0.21 s | **0.25 s** | 1.00 s |
-| median ms/page | 0.52 | **0.57** | 0.57 (in-process) |
+| total wall time | 0.21 s | **0.18 s** (in-process) / 0.25 s (CLI) | 1.00 s |
+| median ms/page | 0.52 | **0.16** (in-process) / 0.57 (CLI) | 0.57 (in-process) |
 | text docs returning nothing | **3** | **0** | 12 scanned (expected) |
 | content coverage, mean (NFKC, vs poppler) | 0.913 | **0.993** | 1.000 |
 | Kangxi radicals left | many | **0** | 0 |
@@ -100,6 +100,29 @@ Largest files, whole-document wall time:
 Per-glyph diagram PDFs (Keynote → pdfcpu) where poppler emits 1–3 character
 lines: zpdf returns complete words (`云原生-异地分布(代理部署)`,
 `数据报表接口`, `管理面板`) with 100% of poppler's characters.
+
+### Cross-engine comparison (same corpus)
+
+All in-process, warm cache, warm-up + 3 runs, median. `zpdf` and
+`poppler/docconv` were measured natively; `pdfium`, `mupdf` and `pdf_oxide`
+through their Python bindings. 38 of the 50 PDFs have a text layer; the other
+12 are scans.
+
+| engine | total | median ms/page | mean coverage vs poppler | empty* | notes |
+|---|---:|---:|---:|---:|---|
+| **zpdf (this fork)** | **0.18 s** | **0.16** | **0.993** | **0** | 0 Kangxi / 0 zero-width / 0 bad chars |
+| poppler / docconv | 1.00 s | 0.57 | 1.000 | 0 | 139 U+200B, 77 U+FFFD |
+| mupdf / PyMuPDF | 0.84 s | 0.67 | 0.999 | 0 | over-splits lines (40% <8 chars) |
+| pdfium / pypdfium2 | 1.07 s | 0.71 | 0.995 | 0 | 49 U+FFFE |
+| pdf_oxide | 1.42 s | 1.31 | 0.914 | 0 | reorders table cells |
+| upstream zpdf | 0.23 s | 0.81 | 0.913 | 3 | 206 Kangxi radicals |
+
+\* text present in poppler but the engine returned nothing.
+
+Known miss (unchanged): the mojibake PDF (`最终验证.pdf`) where the ToUnicode
+maps UTF-8 bytes as Windows-1252. zpdf and poppler both return `è·¨å¢ƒ…`;
+pdf_oxide is the only engine that repairs it. This is a font-level problem, not
+a text-extraction one.
 
 ## Tests and gates
 

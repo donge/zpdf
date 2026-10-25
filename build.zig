@@ -33,6 +33,22 @@ pub fn build(b: *std.Build) void {
     const shared_step = b.step("shared", "Build shared library for FFI");
     shared_step.dependOn(&shared_lib.step);
 
+    // Static library with the C ABI (used by zpdf-go and other FFI bindings).
+    const capi_lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "zpdf_c",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/capi.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const install_capi = b.addInstallArtifact(capi_lib, .{});
+    const install_capi_header = b.addInstallFile(b.path("include/zpdf.h"), "include/zpdf.h");
+    const capi_step = b.step("capi", "Build static C API library (libzpdf_c.a) and header");
+    capi_step.dependOn(&install_capi.step);
+    capi_step.dependOn(&install_capi_header.step);
+
     // WebAssembly build
     const wasm = b.addExecutable(.{
         .name = "zpdf",

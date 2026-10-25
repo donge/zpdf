@@ -23,6 +23,10 @@ fn setError(err: CError) void {
     last_error = err;
 }
 
+export fn zpdf_abi_version() u32 {
+    return 1;
+}
+
 export fn zpdf_last_error() c_int {
     return @intFromEnum(last_error);
 }
@@ -44,6 +48,14 @@ export fn zpdf_open_memory_unsafe(data: [*]const u8, len: usize) ?*ZpdfDocument 
 /// Backward-compatible alias of zpdf_open_memory_unsafe.
 export fn zpdf_open_memory(data: [*]const u8, len: usize) ?*ZpdfDocument {
     return zpdf_open_memory_unsafe(data, len);
+}
+
+/// Open from a copy owned by the document. Safe across the cgo boundary: the
+/// caller may release its buffer as soon as this returns.
+export fn zpdf_open_memory_copy(data: [*]const u8, len: usize) ?*ZpdfDocument {
+    const slice = data[0..len];
+    const doc = zpdf.Document.openFromMemoryCopied(c_allocator, slice, zpdf.ErrorConfig.default()) catch return null;
+    return @ptrCast(doc);
 }
 
 export fn zpdf_close(handle: ?*ZpdfDocument) void {

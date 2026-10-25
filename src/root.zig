@@ -250,6 +250,15 @@ pub const Document = struct {
         return openFromMemoryUnsafe(allocator, data, config);
     }
 
+    /// Open from a copy owned by the document (freed by close()).
+    /// Used by the C API so callers can release their buffer immediately.
+    pub fn openFromMemoryCopied(allocator: std.mem.Allocator, data: []const u8, config: ErrorConfig) !*Document {
+        const copy = try allocator.dupe(u8, data);
+        const aligned: []align(std.heap.page_size_min) u8 = @alignCast(copy);
+        // On failure openFromMemoryOwnedAlloc frees `aligned` itself.
+        return openFromMemoryOwnedAlloc(allocator, aligned, config);
+    }
+
     fn parseDocument(self: *Document) !void {
         const arena = self.parsing_arena.allocator();
 

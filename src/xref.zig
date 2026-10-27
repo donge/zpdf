@@ -71,6 +71,50 @@ const MAX_XREF_SECTIONS: usize = 1024;
 /// hash_allocator: used for XRefTable.entries HashMap
 /// parse_allocator: used for parsing objects (can be arena)
 pub fn parseXRef(hash_allocator: std.mem.Allocator, parse_allocator: std.mem.Allocator, data: []const u8) XRefParseError!XRefTable {
+    return parseXRefFromStart(hash_allocator, parse_allocator, data) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        // A broken startxref/Prev is common (appended bytes, an incremental
+        // section whose /Prev points at a trailer instead of an xref). Scan
+        // the file for traditional xref tables and merge what we can parse.
+        // If no table is found, keep the original error for callers/tests.
+        else => return recoverXRef(hash_allocator, parse_allocator, data) catch return err,
+    };
+}
+
+/// Scan the whole file for traditional xref tables. Used when the startxref
+/// chain is unusable: appended data can hide the real table, and some writers
+/// put a bad /Prev in an incremental section. Pick the table with the most
+/// entries that has a /Root; a malformed incremental section is usually tiny
+/// (often a single entry) and not enough to build the page tree.
+fn recoverXRef(hash_allocator: std.mem.Allocator, parse_allocator: std.mem.Allocator, data: []const u8) XRefParseError!XRefTable {
+    var best_offset: ?u64 = null;
+    var best_count: usize = 0;
+    var pos: usize = 0;
+    while (pos < data.len) {
+        const hit = std.mem.indexOfPos(u8, data, pos, "xref") orelse break;
+        pos = hit + 4;
+        // "startxref" is not a table: require a token boundary before/after.
+        if (hit > 0 and !isWhitespace(data[hit - 1])) continue;
+        if (pos < data.len and !isWhitespace(data[pos])) continue;
+
+        var probe = XRefTable.init(hash_allocator);
+        defer probe.deinit();
+        const trailer = parseXrefTable(parse_allocator, data, @intCast(hit), &probe) catch continue;
+        if (trailer.get("Root") == null) continue;
+        if (probe.entries.count() > best_count) {
+            best_count = probe.entries.count();
+            best_offset = @intCast(hit);
+        }
+    }
+
+    const offset = best_offset orelse return XRefParseError.InvalidXrefTable;
+    var xref = XRefTable.init(hash_allocator);
+    errdefer xref.deinit();
+    xref.trailer = try parseXrefTable(parse_allocator, data, offset, &xref);
+    return xref;
+}
+
+fn parseXRefFromStart(hash_allocator: std.mem.Allocator, parse_allocator: std.mem.Allocator, data: []const u8) XRefParseError!XRefTable {
     // Find startxref from end of file
     const startxref_offset = findStartXref(data) orelse return XRefParseError.StartXrefNotFound;
 

@@ -143,6 +143,37 @@ test "layout: cm-positioned text produces separate lines" {
     try std.testing.expect(std.mem.indexOf(u8, text, "LineOne\nLineTwo") != null);
 }
 
+test "layout: large Tf with small Tm scale produces separate lines" {
+    const allocator = std.testing.allocator;
+    // WPS/Office exports position each line with a large Tf and a tiny Tm
+    // scale. The line-break threshold must use the effective (scaled) font
+    // size, otherwise the whole page collapses into one line.
+    const content =
+        "BT /F1 281 Tf 0.05 0 0 -0.05 72 700 Tm (LineOne) Tj ET\n" ++
+        "BT /F1 281 Tf 0.05 0 0 -0.05 72 686 Tm (LineTwo) Tj ET";
+    const content_obj = try std.fmt.allocPrint(
+        allocator,
+        "<< /Length {d} >>\nstream\n{s}\nendstream",
+        .{ content.len, content },
+    );
+    defer allocator.free(content_obj);
+
+    const objs = [_][]const u8{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R " ++
+            "/Resources << /Font << /F1 5 0 R >> >> >>",
+        content_obj,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    };
+
+    const pdf = try testutil.buildPdf(allocator, &objs);
+    defer allocator.free(pdf);
+    const text = try testutil.extractOne(allocator, pdf);
+    defer allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "LineOne\nLineTwo") != null);
+}
+
 test "unicode table: zero-width droppped, fullwidth alnum folded" {
     const unorm = @import("unicode_norm.zig");
     try std.testing.expect(unorm.ignorable(0x200B));

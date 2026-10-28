@@ -2400,7 +2400,13 @@ fn breakLineIfMoved(
     const dev_x = tm[4] * ctm[0] + tm[5] * ctm[2] + ctm[4];
     const dev_y = tm[4] * ctm[1] + tm[5] * ctm[3] + ctm[5];
     const scale = @max(std.math.hypot(ctm[2], ctm[3]), 0.01);
-    const threshold = font_size * 0.7 * scale;
+    // The text matrix also scales text space into user space. WPS/Office
+    // exports commonly use a large Tf together with a tiny Tm scale (for
+    // example `281 Tf` and `0.05 0 0 -0.05`). Ignoring that scale makes the
+    // threshold several times larger than a real line, so adjacent lines are
+    // never separated and the whole page comes out as one line.
+    const tm_scale = @max(std.math.hypot(tm[2], tm[3]), 0.0001);
+    const threshold = font_size * tm_scale * 0.7 * scale;
     const moved = if (wmode == 1) @abs(dev_x - prev_x.*) > threshold else @abs(dev_y - prev_y.*) > threshold;
     if (have_prev.* and moved) try writer.writeByte('\n');
     prev_x.* = dev_x;

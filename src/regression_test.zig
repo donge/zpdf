@@ -267,3 +267,31 @@ test "Form XObject: indirect /Resources reference is resolved" {
     defer allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "IndirectRes") != null);
 }
+
+test "gap: two fields on one baseline get a word separator" {
+    const allocator = std.testing.allocator;
+    // 300pt apart: the blank an Illustrator template leaves for the next label.
+    const pdf = try testpdf.generateSplitTextPdf(allocator, "NameField", "IDCardField", 300);
+    defer allocator.free(pdf);
+
+    const doc = try zpdf.Document.openFromMemory(allocator, pdf, zpdf.ErrorConfig.default());
+    defer doc.close();
+    const text = try doc.extractAllTextFast(allocator);
+    defer allocator.free(text);
+
+    try std.testing.expect(std.mem.indexOf(u8, text, "NameField IDCardField") != null);
+}
+
+test "gap: a run continued a few points later is not split" {
+    const allocator = std.testing.allocator;
+    // 4pt after a 9-glyph run is still well inside that run's own advance.
+    const pdf = try testpdf.generateSplitTextPdf(allocator, "NameField", "IDCardField", 4);
+    defer allocator.free(pdf);
+
+    const doc = try zpdf.Document.openFromMemory(allocator, pdf, zpdf.ErrorConfig.default());
+    defer doc.close();
+    const text = try doc.extractAllTextFast(allocator);
+    defer allocator.free(text);
+
+    try std.testing.expect(std.mem.indexOf(u8, text, "NameFieldIDCardField") != null);
+}

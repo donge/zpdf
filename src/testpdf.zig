@@ -81,6 +81,71 @@ pub fn generateMinimalPdf(allocator: std.mem.Allocator, text: []const u8) ![]u8 
     return pdf.toOwnedSlice(allocator);
 }
 
+/// Generate a PDF with two text runs on one baseline, `gap` points apart.
+///
+/// Form generators place every filled value with an absolute `Tm`, so two
+/// different fields can end up on one line separated only by blank space that
+/// another layer draws in between. This mirrors that shape.
+pub fn generateSplitTextPdf(
+    allocator: std.mem.Allocator,
+    first: []const u8,
+    second: []const u8,
+    gap: f64,
+) ![]u8 {
+    var pdf: std.ArrayList(u8) = .empty;
+    errdefer pdf.deinit(allocator);
+
+    var writer = compat.arrayListWriter(&pdf, allocator);
+
+    try writer.writeAll("%PDF-1.4\n");
+    try writer.writeAll("%\xE2\xE3\xCF\xD3\n");
+
+    const obj1_offset = pdf.items.len;
+    try writer.writeAll("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    const obj2_offset = pdf.items.len;
+    try writer.writeAll("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    const obj3_offset = pdf.items.len;
+    try writer.writeAll("3 0 obj\n");
+    try writer.writeAll("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ");
+    try writer.writeAll("/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\n");
+    try writer.writeAll("endobj\n");
+
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(allocator);
+    var cw = compat.arrayListWriter(&content, allocator);
+    try cw.writeAll("BT\n/F1 12 Tf\n");
+    try cw.print("1 0 0 1 50 700 Tm\n({s}) Tj\n", .{first});
+    try cw.print("1 0 0 1 {d} 700 Tm\n({s}) Tj\n", .{ 50 + gap, second });
+    try cw.writeAll("ET\n");
+
+    const obj4_offset = pdf.items.len;
+    try writer.print("4 0 obj\n<< /Length {} >>\nstream\n", .{content.items.len});
+    try writer.writeAll(content.items);
+    try writer.writeAll("\nendstream\nendobj\n");
+
+    const obj5_offset = pdf.items.len;
+    try writer.writeAll("5 0 obj\n");
+    try writer.writeAll("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica ");
+    try writer.writeAll("/Encoding /WinAnsiEncoding >>\nendobj\n");
+
+    const xref_offset = pdf.items.len;
+    try writer.writeAll("xref\n0 6\n");
+    try writer.print("{d:0>10} 65535 f \n", .{@as(u64, 0)});
+    try writer.print("{d:0>10} 00000 n \n", .{obj1_offset});
+    try writer.print("{d:0>10} 00000 n \n", .{obj2_offset});
+    try writer.print("{d:0>10} 00000 n \n", .{obj3_offset});
+    try writer.print("{d:0>10} 00000 n \n", .{obj4_offset});
+    try writer.print("{d:0>10} 00000 n \n", .{obj5_offset});
+
+    try writer.writeAll("trailer\n<< /Size 6 /Root 1 0 R >>\n");
+    try writer.print("startxref\n{}\n", .{xref_offset});
+    try writer.writeAll("%%EOF\n");
+
+    return pdf.toOwnedSlice(allocator);
+}
+
 /// Generate a PDF with multiple pages
 pub fn generateMultiPagePdf(allocator: std.mem.Allocator, pages_text: []const []const u8) ![]u8 {
     var pdf: std.ArrayList(u8) = .empty;

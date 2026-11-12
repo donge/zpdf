@@ -2387,6 +2387,8 @@ fn mulMatrix(a: [6]f64, b: [6]f64) [6]f64 {
 /// Emit a newline when the text origin moved to another visual line.
 /// Positions are transformed through the CTM so that graphics placed with
 /// `cm` (instead of `Td`) still produce line breaks.
+///
+/// Returns true when a newline was written.
 fn breakLineIfMoved(
     tm: *const [6]f64,
     ctm: [6]f64,
@@ -2396,7 +2398,7 @@ fn breakLineIfMoved(
     prev_y: *f64,
     have_prev: *bool,
     writer: anytype,
-) !void {
+) !bool {
     const dev_x = tm[4] * ctm[0] + tm[5] * ctm[2] + ctm[4];
     const dev_y = tm[4] * ctm[1] + tm[5] * ctm[3] + ctm[5];
     const scale = @max(std.math.hypot(ctm[2], ctm[3]), 0.01);
@@ -2408,10 +2410,62 @@ fn breakLineIfMoved(
     const tm_scale = @max(std.math.hypot(tm[2], tm[3]), 0.0001);
     const threshold = font_size * tm_scale * 0.7 * scale;
     const moved = if (wmode == 1) @abs(dev_x - prev_x.*) > threshold else @abs(dev_y - prev_y.*) > threshold;
-    if (have_prev.* and moved) try writer.writeByte('\n');
+    const broke = have_prev.* and moved;
+    if (broke) try writer.writeByte('\n');
     prev_x.* = dev_x;
     prev_y.* = dev_y;
     have_prev.* = true;
+    return broke;
+}
+
+/// Bytes carried by a shown text operand, used as an upper bound of the run.
+fn operandBytes(operand: interpreter.Operand) usize {
+    switch (operand) {
+        .string, .hex_string => |s| return s.len,
+        .array => |a| {
+            var n: usize = 0;
+            for (a) |item| switch (item) {
+                .string, .hex_string => |s| n += s.len,
+                else => {},
+            };
+            return n;
+        },
+        else => return 0,
+    }
+}
+
+/// Emit a space when the next run starts beyond the previous run's own width
+/// on the same line.
+///
+/// Form generators append every filled value with an absolute `Tm`, so two
+/// fields can sit ~100pt apart on one baseline with the label that separates
+/// them drawn by a different layer. Without this the text comes out glued
+/// ("阮潇身份证"). The width is an upper bound (1.2em per glyph, wider than
+/// any real glyph), so a space can never be placed inside a run.
+fn emitGapSpace(
+    tm: [6]f64,
+    ctm: [6]f64,
+    prev_x: f64,
+    font_size: f64,
+    run_bytes: usize,
+    run_ends_space: bool,
+    font: ?*const encoding.FontEncoding,
+    writer: anytype,
+) !void {
+    if (run_bytes == 0 or run_ends_space) return;
+    // Rotated text: the advance does not follow the baseline. Scaled Tm
+    // (`281 Tf` with `0.05 0 0 -0.05`): Td/TD are accumulated without the text
+    // matrix, so the tracked origin is off by that factor.
+    if (@abs(tm[1]) > 0.001) return;
+    const matrix_scale = @abs(tm[0] * ctm[0]);
+    if (matrix_scale < 0.5 or matrix_scale > 2.0) return;
+    const em = font_size * @abs(tm[3]) * @abs(ctm[3]);
+    const code_bytes = if (font) |f| f.bytes_per_char else 1;
+    const glyphs = @max(@as(f64, @floatFromInt(run_bytes)) /
+        @as(f64, @floatFromInt(@max(code_bytes, 1))), 1);
+    const dev_x = tm[4] * ctm[0] + tm[5] * ctm[2] + ctm[4];
+    if (dev_x - prev_x <= glyphs * 1.2 * em + em * 0.2) return;
+    try writer.writeByte(' ');
 }
 
 /// Try to buffer a token as an operand. Returns true if consumed (not an operator).
@@ -2513,6 +2567,10 @@ fn extractContentStream(
     // using raw font_size would make the threshold too small and produce
     // spurious newlines for every super/subscript.
     var last_text_font_size: f64 = 12;
+    // Bytes shown since the last positioning operator, and whether the output
+    // already ended with a space; both drive emitGapSpace.
+    var run_bytes: usize = 0;
+    var run_ends_space: bool = false;
 
     var key_buf: [256]u8 = undefined;
 
@@ -2548,7 +2606,10 @@ fn extractContentStream(
                 }, ctm);
             },
             'B' => switch (mode) {
-                .stream => if (op.len == 2 and op[1] == 'T') {},
+                .stream => if (op.len == 2 and op[1] == 'T') {
+                    run_bytes = 0;
+                    run_ends_space = false;
+                },
                 .bounds => {},
                 .structured => |extractor| {
                     if (std.mem.eql(u8, op, "BDC")) {
@@ -2566,7 +2627,10 @@ fn extractContentStream(
                 },
             },
             'E' => switch (mode) {
-                .stream => if (op.len == 2 and op[1] == 'T') {},
+                .stream => if (op.len == 2 and op[1] == 'T') {
+                    run_bytes = 0;
+                    run_ends_space = false;
+                },
                 .bounds => {},
                 .structured => |extractor| {
                     if (std.mem.eql(u8, op, "EMC")) {
@@ -2598,16 +2662,12 @@ fn extractContentStream(
                             tm[4] += operands[0].number;
                             tm[5] += operands[1].number;
                             const wmode = if (current_font) |f| f.wmode else 0;
-                            try breakLineIfMoved(
-                                &tm,
-                                ctm,
-                                @max(font_size, last_text_font_size),
-                                wmode,
-                                &prev_dev_x,
-                                &prev_dev_y,
-                                &have_dev_pos,
-                                writer,
-                            );
+                            const fs_eff = @max(font_size, last_text_font_size);
+                            const run_x = prev_dev_x;
+                            const broke = try breakLineIfMoved(&tm, ctm, fs_eff, wmode, &prev_dev_x, &prev_dev_y, &have_dev_pos, writer);
+                            if (!broke) try emitGapSpace(tm, ctm, run_x, fs_eff, run_bytes, run_ends_space, current_font, writer);
+                            run_bytes = 0;
+                            run_ends_space = false;
                         },
                         .bounds => |collector| {
                             current_x += operands[0].number;
@@ -2627,16 +2687,12 @@ fn extractContentStream(
                                 operands[4].number, operands[5].number,
                             };
                             const wmode = if (current_font) |f| f.wmode else 0;
-                            try breakLineIfMoved(
-                                &tm,
-                                ctm,
-                                @max(font_size, last_text_font_size),
-                                wmode,
-                                &prev_dev_x,
-                                &prev_dev_y,
-                                &have_dev_pos,
-                                writer,
-                            );
+                            const fs_eff = @max(font_size, last_text_font_size);
+                            const run_x = prev_dev_x;
+                            const broke = try breakLineIfMoved(&tm, ctm, fs_eff, wmode, &prev_dev_x, &prev_dev_y, &have_dev_pos, writer);
+                            if (!broke) try emitGapSpace(tm, ctm, run_x, fs_eff, run_bytes, run_ends_space, current_font, writer);
+                            run_bytes = 0;
+                            run_ends_space = false;
                         },
                         .bounds => |collector| {
                             current_x = operands[4].number;
@@ -2648,7 +2704,11 @@ fn extractContentStream(
                     }
                 },
                 '*' => switch (mode) {
-                    .stream => try writer.writeByte('\n'),
+                    .stream => {
+                        try writer.writeByte('\n');
+                        run_bytes = 0;
+                        run_ends_space = false;
+                    },
                     .bounds => |collector| try collector.flush(),
                     .structured => {},
                 },
@@ -2656,6 +2716,11 @@ fn extractContentStream(
                     switch (mode) {
                         .stream => {
                             try writeTextWithFont(operands[0], current_font, writer);
+                            run_bytes += operandBytes(operands[0]);
+                            run_ends_space = switch (operands[0]) {
+                                .string, .hex_string => |t| t.len > 0 and t[t.len - 1] == 0x20,
+                                else => false,
+                            };
                             last_text_font_size = font_size;
                         },
                         .bounds => |collector| try writeTextWithFont(operands[0], current_font, collector),
@@ -2670,6 +2735,11 @@ fn extractContentStream(
                     switch (mode) {
                         .stream => {
                             try writeTJArrayWithFont(operands[0], current_font, writer);
+                            run_bytes += operandBytes(operands[0]);
+                            run_ends_space = switch (operands[0]) {
+                                .string, .hex_string => |t| t.len > 0 and t[t.len - 1] == 0x20,
+                                else => false,
+                            };
                             last_text_font_size = font_size;
                         },
                         .bounds => |collector| try writeTJArrayToCollector(operands[0], current_font, collector),
@@ -2687,6 +2757,8 @@ fn extractContentStream(
                     .stream => {
                         try writer.writeByte('\n');
                         try writeTextWithFont(operands[0], current_font, writer);
+                        run_bytes = 0;
+                        run_ends_space = false;
                         last_text_font_size = font_size;
                     },
                     .bounds => |collector| {
@@ -2705,6 +2777,8 @@ fn extractContentStream(
                     .stream => {
                         try writer.writeByte('\n');
                         try writeTextWithFont(operands[2], current_font, writer);
+                        run_bytes = 0;
+                        run_ends_space = false;
                         last_text_font_size = font_size;
                     },
                     .bounds => |collector| {
